@@ -4810,6 +4810,18 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         try:
+            # Check Content-Length to warn about large files
+            content_length = int(self.headers.get('Content-Length', 0) or 0)
+            max_size = 16 * 1024 * 1024 * 1024  # 16GB
+            if content_length > max_size:
+                self.send_response(413)
+                self.end_headers()
+                size_gb = content_length / (1024 * 1024 * 1024)
+                self.wfile.write(json.dumps({
+                    "error": f"文件太大 ({size_gb:.2f}GB)。最大支持 16GB。请使用较小的备份文件或联系管理员调整服务器配置。"
+                }).encode())
+                return
+            
             # Parse multipart form data
             form = cgi.FieldStorage(
                 fp=self.rfile,

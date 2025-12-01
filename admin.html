@@ -852,7 +852,8 @@
                                     style="width: 100%; max-width: 400px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;"
                                 />
                                 <p style="margin-top: 5px; color: #666; font-size: 12px;">
-                                    .zip 文件包含数据库和图片，.db 文件仅包含数据库（向后兼容）
+                                    .zip 文件包含数据库和图片，.db 文件仅包含数据库（向后兼容）<br>
+                                    <strong>注意：</strong>最大支持 16GB。如果遇到 413 错误，请检查服务器配置（nginx/Apache 的 client_max_body_size 或 LimitRequestBody）。
                                 </p>
                             </div>
                             
@@ -2278,6 +2279,29 @@
                 return;
             }
             
+            // Check file size (warn if > 1GB, but allow up to 16GB)
+            const file = fileInput.files[0];
+            const maxSize = 16 * 1024 * 1024 * 1024; // 16GB
+            const warnSize = 1024 * 1024 * 1024; // 1GB
+            
+            if (file.size > maxSize) {
+                if (statusEl) {
+                    statusEl.textContent = `文件太大 (${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB)。最大支持 16GB。`;
+                    statusEl.style.color = '#dc3545';
+                } else {
+                    alert(`文件太大 (${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB)。最大支持 16GB。`);
+                }
+                return;
+            }
+            
+            if (file.size > warnSize) {
+                const fileSizeGB = (file.size / 1024 / 1024 / 1024).toFixed(2);
+                const proceed = confirm(`警告：文件较大 (${fileSizeGB}GB)，上传可能需要较长时间。是否继续？`);
+                if (!proceed) {
+                    return;
+                }
+            }
+            
             // Check if at least one checkbox is selected
             const checkboxes = form.querySelectorAll('input[type="checkbox"]');
             let atLeastOneChecked = false;
@@ -2317,7 +2341,25 @@
                 credentials: 'include',
                 body: formData
             })
-            .then(response => response.json())
+            .then(async response => {
+                // Handle non-JSON responses (like 413 errors)
+                if (!response.ok) {
+                    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                    if (response.status === 413) {
+                        errorMessage = '文件太大，无法上传。请检查服务器配置或使用较小的备份文件。';
+                    }
+                    try {
+                        const errorData = await response.json();
+                        if (errorData.error) {
+                            errorMessage = errorData.error;
+                        }
+                    } catch (e) {
+                        // Response is not JSON, use status message
+                    }
+                    throw new Error(errorMessage);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.message) {
                     if (statusEl) {
