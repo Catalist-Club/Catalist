@@ -829,28 +829,31 @@
                     <p class="info-note">⚠️ 此功能仅限超级管理员使用。可以下载完整的数据库备份，或从备份文件中选择性恢复数据。</p>
                     
                     <div class="panel-card" style="margin-bottom: 20px;">
-                        <h3>下载数据库备份</h3>
-                        <p class="info-note">下载完整的数据库备份文件。每次下载都包含所有数据。</p>
-                        <button id="downloadDatabaseBtn" class="btn btn-primary">下载完整数据库备份</button>
+                        <h3>下载完整备份</h3>
+                        <p class="info-note">下载完整的备份文件（.zip格式），包含数据库和所有图片文件。</p>
+                        <button id="downloadDatabaseBtn" class="btn btn-primary">下载完整备份</button>
                         <p id="downloadStatus" style="margin-top: 10px; color: #666; font-size: 14px;"></p>
                     </div>
                     
                     <div class="panel-card">
                         <h3>恢复数据库</h3>
-                        <p class="info-note">从备份文件中选择性恢复数据。请选择要恢复的数据类型。</p>
+                        <p class="info-note">从备份文件中选择性恢复数据。支持 .zip 文件（包含数据库和图片）或 .db 文件（仅数据库）。请选择要恢复的数据类型。</p>
                         <form id="restoreDatabaseForm" enctype="multipart/form-data">
                             <div style="margin-bottom: 20px;">
                                 <label for="databaseFile" style="display: block; margin-bottom: 10px; font-weight: bold;">
-                                    选择数据库备份文件：
+                                    选择备份文件（.zip 或 .db）：
                                 </label>
                                 <input 
                                     type="file" 
                                     id="databaseFile" 
                                     name="database_file"
-                                    accept=".db"
+                                    accept=".zip,.db"
                                     required
                                     style="width: 100%; max-width: 400px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;"
                                 />
+                                <p style="margin-top: 5px; color: #666; font-size: 12px;">
+                                    .zip 文件包含数据库和图片，.db 文件仅包含数据库（向后兼容）
+                                </p>
                             </div>
                             
                             <div style="margin-bottom: 20px;">
@@ -2217,7 +2220,7 @@
                 if (response.ok) {
                     // Get filename from Content-Disposition header or use default
                     const contentDisposition = response.headers.get('Content-Disposition');
-                    let filename = 'database_backup.db';
+                    let filename = 'backup.zip';
                     if (contentDisposition) {
                         const filenameMatch = contentDisposition.match(/filename="(.+)"/);
                         if (filenameMatch) {
