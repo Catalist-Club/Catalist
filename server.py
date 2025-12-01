@@ -1605,6 +1605,64 @@ class DatabaseManager:
             print(f"Error reading database: {e}")
             return b''
     
+    def create_backup_archive(self, backup_path: str) -> bool:
+        """Create a zip archive containing database and all images"""
+        try:
+            import zipfile
+            import shutil
+            
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Add database file
+                zipf.write(self.db_path, 'database.db')
+                
+                # Add all images from uploads directory
+                uploads_dir = 'uploads'
+                if os.path.exists(uploads_dir):
+                    for root, dirs, files in os.walk(uploads_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            # Get relative path from uploads directory
+                            arcname = os.path.relpath(file_path, '.')
+                            zipf.write(file_path, arcname)
+            
+            return True
+        except Exception as e:
+            print(f"Error creating backup archive: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def get_backup_archive_bytes(self) -> bytes:
+        """Get the complete backup archive (database + images) as bytes"""
+        try:
+            import tempfile
+            import zipfile
+            
+            # Create temporary zip file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+                temp_zip_path = tmp_file.name
+            
+            # Create the archive
+            if not self.create_backup_archive(temp_zip_path):
+                return b''
+            
+            # Read the zip file
+            with open(temp_zip_path, 'rb') as f:
+                zip_bytes = f.read()
+            
+            # Clean up temp file
+            try:
+                os.remove(temp_zip_path)
+            except:
+                pass
+            
+            return zip_bytes
+        except Exception as e:
+            print(f"Error creating backup archive bytes: {e}")
+            import traceback
+            traceback.print_exc()
+            return b''
+    
     def restore_database(self, backup_db_path: str, restore_options: Dict[str, bool]) -> bool:
         """Restore database with selective restoration options
         
@@ -1772,6 +1830,69 @@ class DatabaseManager:
         finally:
             backup_conn.close()
             current_conn.close()
+    
+    def restore_images_from_archive(self, archive_path: str) -> bool:
+        """Extract and restore images from backup archive
+        
+        Args:
+            archive_path: Path to the zip archive file
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import zipfile
+            import shutil
+            
+            # Create temporary extraction directory
+            temp_dir = 'temp'
+            os.makedirs(temp_dir, exist_ok=True)
+            extract_dir = os.path.join(temp_dir, f"extract_{int(time.time())}")
+            os.makedirs(extract_dir, exist_ok=True)
+            
+            try:
+                # Extract zip file
+                with zipfile.ZipFile(archive_path, 'r') as zipf:
+                    zipf.extractall(extract_dir)
+                
+                # Find and restore images from uploads directory in archive
+                uploads_in_archive = os.path.join(extract_dir, 'uploads')
+                if os.path.exists(uploads_in_archive):
+                    # Copy all files from archive uploads to current uploads
+                    current_uploads = 'uploads'
+                    if os.path.exists(current_uploads):
+                        # Remove existing uploads if they exist (optional - you might want to merge instead)
+                        # For safety, we'll copy over existing files
+                        pass
+                    
+                    # Copy all files maintaining directory structure
+                    for root, dirs, files in os.walk(uploads_in_archive):
+                        for file in files:
+                            src_path = os.path.join(root, file)
+                            # Get relative path from uploads_in_archive
+                            rel_path = os.path.relpath(src_path, uploads_in_archive)
+                            dst_path = os.path.join(current_uploads, rel_path)
+                            
+                            # Create destination directory if needed
+                            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                            
+                            # Copy file
+                            shutil.copy2(src_path, dst_path)
+                
+                return True
+                
+            finally:
+                # Clean up extraction directory
+                try:
+                    shutil.rmtree(extract_dir)
+                except:
+                    pass
+                    
+        except Exception as e:
+            print(f"Error restoring images from archive: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
 
 # Initialize database
@@ -4645,7 +4766,7 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": str(e)}).encode())
     
     def handle_download_database(self):
-        """Download complete database backup (super admin only)"""
+        """Download complete backup archive (database + images) (super admin only)"""
         user = self.get_current_user()
         if not user or not (user.get('is_super_admin') or user.get('is_super_admin') == 1):
             self.send_response(403)
@@ -4654,24 +4775,25 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         try:
-            db_bytes = db.get_database_bytes()
-            if not db_bytes:
+            # Get backup archive (database + images) as bytes
+            backup_bytes = db.get_backup_archive_bytes()
+            if not backup_bytes:
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "Failed to read database"}).encode())
+                self.wfile.write(json.dumps({"error": "Failed to create backup archive"}).encode())
                 return
             
             # Generate filename with timestamp
             from datetime import datetime
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"database_backup_{timestamp}.db"
+            filename = f"backup_{timestamp}.zip"
             
             self.send_response(200)
-            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Type', 'application/zip')
             self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
-            self.send_header('Content-Length', str(len(db_bytes)))
+            self.send_header('Content-Length', str(len(backup_bytes)))
             self.end_headers()
-            self.wfile.write(db_bytes)
+            self.wfile.write(backup_bytes)
             
         except Exception as e:
             self.send_response(500)
@@ -4730,28 +4852,92 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             # Save uploaded file temporarily
             temp_dir = 'temp'
             os.makedirs(temp_dir, exist_ok=True)
-            temp_file_path = os.path.join(temp_dir, f"restore_{int(time.time())}.db")
+            timestamp = int(time.time())
             
-            with open(temp_file_path, 'wb') as f:
-                f.write(file_item.file.read())
+            # Determine file type from filename
+            filename = file_item.filename.lower()
+            is_zip = filename.endswith('.zip')
+            
+            if is_zip:
+                # Handle zip archive (database + images)
+                temp_archive_path = os.path.join(temp_dir, f"restore_{timestamp}.zip")
+                temp_db_path = os.path.join(temp_dir, f"restore_{timestamp}.db")
+                
+                with open(temp_archive_path, 'wb') as f:
+                    f.write(file_item.file.read())
+                
+                # Extract database from zip
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(temp_archive_path, 'r') as zipf:
+                        # Look for database.db in the archive
+                        if 'database.db' in zipf.namelist():
+                            zipf.extract('database.db', temp_dir)
+                            # Rename extracted database to our temp path
+                            extracted_db = os.path.join(temp_dir, 'database.db')
+                            if os.path.exists(extracted_db):
+                                if os.path.exists(temp_db_path):
+                                    os.remove(temp_db_path)
+                                os.rename(extracted_db, temp_db_path)
+                        else:
+                            os.remove(temp_archive_path)
+                            self.send_response(400)
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"error": "Archive does not contain database.db"}).encode())
+                            return
+                except zipfile.BadZipFile:
+                    os.remove(temp_archive_path)
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Invalid zip file format"}).encode())
+                    return
+                except Exception as e:
+                    try:
+                        os.remove(temp_archive_path)
+                        if os.path.exists(temp_db_path):
+                            os.remove(temp_db_path)
+                    except:
+                        pass
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": f"Failed to extract archive: {str(e)}"}).encode())
+                    return
+            else:
+                # Handle legacy .db file (backward compatibility)
+                temp_db_path = os.path.join(temp_dir, f"restore_{timestamp}.db")
+                with open(temp_db_path, 'wb') as f:
+                    f.write(file_item.file.read())
             
             # Verify it's a valid SQLite database
             try:
-                test_conn = sqlite3.connect(temp_file_path)
+                test_conn = sqlite3.connect(temp_db_path)
                 test_conn.close()
             except:
-                os.remove(temp_file_path)
+                try:
+                    os.remove(temp_db_path)
+                    if is_zip and 'temp_archive_path' in locals():
+                        os.remove(temp_archive_path)
+                except:
+                    pass
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": "Invalid database file format"}).encode())
                 return
             
             # Restore database
-            success = db.restore_database(temp_file_path, restore_options)
+            success = db.restore_database(temp_db_path, restore_options)
             
-            # Clean up temp file
+            # Restore images if it's a zip archive
+            if success and is_zip:
+                images_success = db.restore_images_from_archive(temp_archive_path)
+                if not images_success:
+                    print("Warning: Database restored but images restoration failed")
+            
+            # Clean up temp files
             try:
-                os.remove(temp_file_path)
+                os.remove(temp_db_path)
+                if is_zip and 'temp_archive_path' in locals():
+                    os.remove(temp_archive_path)
             except:
                 pass
             
@@ -4765,10 +4951,12 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Failed to restore database"}).encode())
                 
         except Exception as e:
-            # Clean up temp file in case of error
+            # Clean up temp files in case of error
             try:
-                if 'temp_file_path' in locals():
-                    os.remove(temp_file_path)
+                if 'temp_db_path' in locals():
+                    os.remove(temp_db_path)
+                if 'temp_archive_path' in locals():
+                    os.remove(temp_archive_path)
             except:
                 pass
             
