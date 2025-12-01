@@ -1634,6 +1634,14 @@ class DatabaseManager:
         current_conn.row_factory = sqlite3.Row  # Set row_factory for consistency
         current_cursor = current_conn.cursor()
         
+        # Helper function to safely get values from sqlite3.Row objects
+        def row_get(row, key, default=None):
+            """Safely get a value from a sqlite3.Row object, returning default if key doesn't exist"""
+            try:
+                return row[key] if key in row.keys() else default
+            except (KeyError, IndexError):
+                return default
+        
         try:
             # Restore users
             if restore_options.get('restore_users', False):
@@ -1646,117 +1654,117 @@ class DatabaseManager:
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         user['id'], user['name'], user['email'], user['password_hash'],
-                        user.get('is_admin', 0), user.get('is_super_admin', 0),
-                        user.get('is_verified', 0), user.get('verification_token'), user.get('created_at')
+                        row_get(user, 'is_admin', 0), row_get(user, 'is_super_admin', 0),
+                        row_get(user, 'is_verified', 0), row_get(user, 'verification_token'), row_get(user, 'created_at')
                     ))
             
             # Restore cats and related data
             if restore_options.get('restore_cats', False):
-                    # Delete related data first (due to foreign keys)
-                    current_cursor.execute('DELETE FROM cat_location_history')
-                    current_cursor.execute('DELETE FROM cat_recognition_events')
-                    current_cursor.execute('DELETE FROM cat_reference_images')
-                    current_cursor.execute('DELETE FROM adoption_requests WHERE cat_id IS NOT NULL')
-                    current_cursor.execute('DELETE FROM cats')
-                    
-                    # Restore cats
-                    backup_cursor.execute('SELECT * FROM cats')
-                    cats = backup_cursor.fetchall()
-                    for cat in cats:
-                        columns = [col for col in cat.keys()]
-                        placeholders = ','.join(['?' for _ in columns])
-                        column_names = ','.join(columns)
-                        values = [cat[col] for col in columns]
-                        current_cursor.execute(f'INSERT INTO cats ({column_names}) VALUES ({placeholders})', values)
-                    
-                    # Restore cat_reference_images
-                    backup_cursor.execute('SELECT * FROM cat_reference_images')
-                    ref_images = backup_cursor.fetchall()
-                    for ref_img in ref_images:
-                        current_cursor.execute('''
-                            INSERT INTO cat_reference_images (id, cat_id, image_path, hash_hex, hash_length, embedding_vector, is_primary, order_index, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            ref_img['id'], ref_img['cat_id'], ref_img['image_path'],
-                            ref_img['hash_hex'], ref_img['hash_length'], ref_img.get('embedding_vector'),
-                            ref_img.get('is_primary', 0), ref_img.get('order_index', 0), ref_img.get('created_at')
-                        ))
-                    
-                    # Restore cat_recognition_events
-                    backup_cursor.execute('SELECT * FROM cat_recognition_events')
-                    events = backup_cursor.fetchall()
-                    for event in events:
-                        current_cursor.execute('''
-                            INSERT INTO cat_recognition_events (id, cat_id, matched, match_score, hash_distance, request_metadata, image_path, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            event['id'], event.get('cat_id'), event.get('matched'),
-                            event.get('match_score'), event.get('hash_distance'),
-                            event.get('request_metadata'), event.get('image_path'), event.get('created_at')
-                        ))
-                    
-                    # Restore cat_location_history
-                    backup_cursor.execute('SELECT * FROM cat_location_history')
-                    locations = backup_cursor.fetchall()
-                    for loc in locations:
-                        current_cursor.execute('''
-                            INSERT INTO cat_location_history (id, cat_id, user_id, latitude, longitude, visit_status, visit_notes, recognition_event_id, image_path, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            loc['id'], loc['cat_id'], loc['user_id'], loc['latitude'], loc['longitude'],
-                            loc.get('visit_status'), loc.get('visit_notes'), loc.get('recognition_event_id'),
-                            loc.get('image_path'), loc.get('created_at')
-                        ))
+                # Delete related data first (due to foreign keys)
+                current_cursor.execute('DELETE FROM cat_location_history')
+                current_cursor.execute('DELETE FROM cat_recognition_events')
+                current_cursor.execute('DELETE FROM cat_reference_images')
+                current_cursor.execute('DELETE FROM adoption_requests WHERE cat_id IS NOT NULL')
+                current_cursor.execute('DELETE FROM cats')
+                
+                # Restore cats
+                backup_cursor.execute('SELECT * FROM cats')
+                cats = backup_cursor.fetchall()
+                for cat in cats:
+                    columns = [col for col in cat.keys()]
+                    placeholders = ','.join(['?' for _ in columns])
+                    column_names = ','.join(columns)
+                    values = [cat[col] for col in columns]
+                    current_cursor.execute(f'INSERT INTO cats ({column_names}) VALUES ({placeholders})', values)
+                
+                # Restore cat_reference_images
+                backup_cursor.execute('SELECT * FROM cat_reference_images')
+                ref_images = backup_cursor.fetchall()
+                for ref_img in ref_images:
+                    current_cursor.execute('''
+                        INSERT INTO cat_reference_images (id, cat_id, image_path, hash_hex, hash_length, embedding_vector, is_primary, order_index, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        ref_img['id'], ref_img['cat_id'], ref_img['image_path'],
+                        ref_img['hash_hex'], ref_img['hash_length'], row_get(ref_img, 'embedding_vector'),
+                        row_get(ref_img, 'is_primary', 0), row_get(ref_img, 'order_index', 0), row_get(ref_img, 'created_at')
+                    ))
+                
+                # Restore cat_recognition_events
+                backup_cursor.execute('SELECT * FROM cat_recognition_events')
+                events = backup_cursor.fetchall()
+                for event in events:
+                    current_cursor.execute('''
+                        INSERT INTO cat_recognition_events (id, cat_id, matched, match_score, hash_distance, request_metadata, image_path, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        event['id'], row_get(event, 'cat_id'), row_get(event, 'matched'),
+                        row_get(event, 'match_score'), row_get(event, 'hash_distance'),
+                        row_get(event, 'request_metadata'), row_get(event, 'image_path'), row_get(event, 'created_at')
+                    ))
+                
+                # Restore cat_location_history
+                backup_cursor.execute('SELECT * FROM cat_location_history')
+                locations = backup_cursor.fetchall()
+                for loc in locations:
+                    current_cursor.execute('''
+                        INSERT INTO cat_location_history (id, cat_id, user_id, latitude, longitude, visit_status, visit_notes, recognition_event_id, image_path, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        loc['id'], loc['cat_id'], loc['user_id'], loc['latitude'], loc['longitude'],
+                        row_get(loc, 'visit_status'), row_get(loc, 'visit_notes'), row_get(loc, 'recognition_event_id'),
+                        row_get(loc, 'image_path'), row_get(loc, 'created_at')
+                    ))
                 
             # Restore content
             if restore_options.get('restore_content', False):
-                    current_cursor.execute('DELETE FROM content')
-                    backup_cursor.execute('SELECT * FROM content')
-                    contents = backup_cursor.fetchall()
-                    for content in contents:
-                        current_cursor.execute('''
-                            INSERT INTO content (id, title, content, updated_at)
-                            VALUES (?, ?, ?, ?)
-                        ''', (content['id'], content.get('title'), content.get('content'), content.get('updated_at')))
+                current_cursor.execute('DELETE FROM content')
+                backup_cursor.execute('SELECT * FROM content')
+                contents = backup_cursor.fetchall()
+                for content in contents:
+                    current_cursor.execute('''
+                        INSERT INTO content (id, title, content, updated_at)
+                        VALUES (?, ?, ?, ?)
+                    ''', (content['id'], row_get(content, 'title'), row_get(content, 'content'), row_get(content, 'updated_at')))
                 
             # Restore settings
             if restore_options.get('restore_settings', False):
-                    current_cursor.execute('DELETE FROM settings')
-                    backup_cursor.execute('SELECT * FROM settings')
-                    settings = backup_cursor.fetchall()
-                    for setting in settings:
-                        current_cursor.execute('''
-                            INSERT INTO settings (key, value, updated_at)
-                            VALUES (?, ?, ?)
-                        ''', (setting['key'], setting.get('value'), setting.get('updated_at')))
+                current_cursor.execute('DELETE FROM settings')
+                backup_cursor.execute('SELECT * FROM settings')
+                settings = backup_cursor.fetchall()
+                for setting in settings:
+                    current_cursor.execute('''
+                        INSERT INTO settings (key, value, updated_at)
+                        VALUES (?, ?, ?)
+                    ''', (setting['key'], row_get(setting, 'value'), row_get(setting, 'updated_at')))
                 
             # Restore messages
             if restore_options.get('restore_messages', False):
-                    current_cursor.execute('DELETE FROM messages')
-                    backup_cursor.execute('SELECT * FROM messages')
-                    messages = backup_cursor.fetchall()
-                    for msg in messages:
-                        current_cursor.execute('''
-                            INSERT INTO messages (id, sender_id, receiver_id, subject, content, is_read, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            msg['id'], msg.get('sender_id'), msg.get('receiver_id'),
-                            msg.get('subject'), msg.get('content'), msg.get('is_read', 0), msg.get('created_at')
-                        ))
+                current_cursor.execute('DELETE FROM messages')
+                backup_cursor.execute('SELECT * FROM messages')
+                messages = backup_cursor.fetchall()
+                for msg in messages:
+                    current_cursor.execute('''
+                        INSERT INTO messages (id, sender_id, receiver_id, subject, content, is_read, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        msg['id'], row_get(msg, 'sender_id'), row_get(msg, 'receiver_id'),
+                        row_get(msg, 'subject'), row_get(msg, 'content'), row_get(msg, 'is_read', 0), row_get(msg, 'created_at')
+                    ))
                 
             # Restore adoption_requests
             if restore_options.get('restore_adoption_requests', False):
-                    current_cursor.execute('DELETE FROM adoption_requests')
-                    backup_cursor.execute('SELECT * FROM adoption_requests')
-                    requests = backup_cursor.fetchall()
-                    for req in requests:
-                        current_cursor.execute('''
-                            INSERT INTO adoption_requests (id, cat_id, user_id, message, contact_info, status, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            req['id'], req.get('cat_id'), req.get('user_id'),
-                            req.get('message'), req.get('contact_info'), req.get('status', 'pending'), req.get('created_at')
-                        ))
+                current_cursor.execute('DELETE FROM adoption_requests')
+                backup_cursor.execute('SELECT * FROM adoption_requests')
+                requests = backup_cursor.fetchall()
+                for req in requests:
+                    current_cursor.execute('''
+                        INSERT INTO adoption_requests (id, cat_id, user_id, message, contact_info, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        req['id'], row_get(req, 'cat_id'), row_get(req, 'user_id'),
+                        row_get(req, 'message'), row_get(req, 'contact_info'), row_get(req, 'status', 'pending'), row_get(req, 'created_at')
+                    ))
                 
             current_conn.commit()
             return True
