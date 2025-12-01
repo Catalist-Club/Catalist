@@ -1620,35 +1620,38 @@ class DatabaseManager:
         
         Returns:
             True if successful, False otherwise
+            
+        Raises:
+            Exception: If restoration fails, the exception is raised with details
         """
+        # Open backup database
+        backup_conn = sqlite3.connect(backup_db_path)
+        backup_conn.row_factory = sqlite3.Row
+        backup_cursor = backup_conn.cursor()
+        
+        # Open current database
+        current_conn = sqlite3.connect(self.db_path)
+        current_conn.row_factory = sqlite3.Row  # Set row_factory for consistency
+        current_cursor = current_conn.cursor()
+        
         try:
-            # Open backup database
-            backup_conn = sqlite3.connect(backup_db_path)
-            backup_conn.row_factory = sqlite3.Row
-            backup_cursor = backup_conn.cursor()
+            # Restore users
+            if restore_options.get('restore_users', False):
+                current_cursor.execute('DELETE FROM users')
+                backup_cursor.execute('SELECT * FROM users')
+                users = backup_cursor.fetchall()
+                for user in users:
+                    current_cursor.execute('''
+                        INSERT INTO users (id, name, email, password_hash, is_admin, is_super_admin, is_verified, verification_token, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        user['id'], user['name'], user['email'], user['password_hash'],
+                        user.get('is_admin', 0), user.get('is_super_admin', 0),
+                        user.get('is_verified', 0), user.get('verification_token'), user.get('created_at')
+                    ))
             
-            # Open current database
-            current_conn = sqlite3.connect(self.db_path)
-            current_cursor = current_conn.cursor()
-            
-            try:
-                # Restore users
-                if restore_options.get('restore_users', False):
-                    current_cursor.execute('DELETE FROM users')
-                    backup_cursor.execute('SELECT * FROM users')
-                    users = backup_cursor.fetchall()
-                    for user in users:
-                        current_cursor.execute('''
-                            INSERT INTO users (id, name, email, password_hash, is_admin, is_super_admin, is_verified, verification_token, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            user['id'], user['name'], user['email'], user['password_hash'],
-                            user.get('is_admin', 0), user.get('is_super_admin', 0),
-                            user.get('is_verified', 0), user.get('verification_token'), user.get('created_at')
-                        ))
-                
-                # Restore cats and related data
-                if restore_options.get('restore_cats', False):
+            # Restore cats and related data
+            if restore_options.get('restore_cats', False):
                     # Delete related data first (due to foreign keys)
                     current_cursor.execute('DELETE FROM cat_location_history')
                     current_cursor.execute('DELETE FROM cat_recognition_events')
@@ -1705,8 +1708,8 @@ class DatabaseManager:
                             loc.get('image_path'), loc.get('created_at')
                         ))
                 
-                # Restore content
-                if restore_options.get('restore_content', False):
+            # Restore content
+            if restore_options.get('restore_content', False):
                     current_cursor.execute('DELETE FROM content')
                     backup_cursor.execute('SELECT * FROM content')
                     contents = backup_cursor.fetchall()
@@ -1716,8 +1719,8 @@ class DatabaseManager:
                             VALUES (?, ?, ?, ?)
                         ''', (content['id'], content.get('title'), content.get('content'), content.get('updated_at')))
                 
-                # Restore settings
-                if restore_options.get('restore_settings', False):
+            # Restore settings
+            if restore_options.get('restore_settings', False):
                     current_cursor.execute('DELETE FROM settings')
                     backup_cursor.execute('SELECT * FROM settings')
                     settings = backup_cursor.fetchall()
@@ -1727,8 +1730,8 @@ class DatabaseManager:
                             VALUES (?, ?, ?)
                         ''', (setting['key'], setting.get('value'), setting.get('updated_at')))
                 
-                # Restore messages
-                if restore_options.get('restore_messages', False):
+            # Restore messages
+            if restore_options.get('restore_messages', False):
                     current_cursor.execute('DELETE FROM messages')
                     backup_cursor.execute('SELECT * FROM messages')
                     messages = backup_cursor.fetchall()
@@ -1741,8 +1744,8 @@ class DatabaseManager:
                             msg.get('subject'), msg.get('content'), msg.get('is_read', 0), msg.get('created_at')
                         ))
                 
-                # Restore adoption_requests
-                if restore_options.get('restore_adoption_requests', False):
+            # Restore adoption_requests
+            if restore_options.get('restore_adoption_requests', False):
                     current_cursor.execute('DELETE FROM adoption_requests')
                     backup_cursor.execute('SELECT * FROM adoption_requests')
                     requests = backup_cursor.fetchall()
@@ -1755,18 +1758,12 @@ class DatabaseManager:
                             req.get('message'), req.get('contact_info'), req.get('status', 'pending'), req.get('created_at')
                         ))
                 
-                current_conn.commit()
-                return True
-                
-            finally:
-                backup_conn.close()
-                current_conn.close()
-                
-        except Exception as e:
-            print(f"Error restoring database: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            current_conn.commit()
+            return True
+            
+        finally:
+            backup_conn.close()
+            current_conn.close()
 
 
 # Initialize database
@@ -4760,9 +4757,23 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Failed to restore database"}).encode())
                 
         except Exception as e:
+            # Clean up temp file in case of error
+            try:
+                if 'temp_file_path' in locals():
+                    os.remove(temp_file_path)
+            except:
+                pass
+            
+            # Log the full error for debugging
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error restoring database: {error_details}")
+            
             self.send_response(500)
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            # Return a more detailed error message
+            error_msg = str(e)
+            self.wfile.write(json.dumps({"error": f"Failed to restore database: {error_msg}"}).encode())
     
     def handle_admin_login_with_token(self, token):
         """Authenticate using a single-use token. Only the preset super admin can use this.
