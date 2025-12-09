@@ -151,9 +151,37 @@ class AuthSystem {
 
     // 验证密码强度
     validatePassword(password) {
-        // 至少8位，包含字母和数字
-        const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/;
-        return passwordRegex.test(password);
+        // 至少12位，包含大写字母、小写字母、数字和特殊字符
+        if (!password || password.length < 12) {
+            return false;
+        }
+        
+        // 检查是否包含大写字母
+        if (!/[A-Z]/.test(password)) {
+            return false;
+        }
+        
+        // 检查是否包含小写字母
+        if (!/[a-z]/.test(password)) {
+            return false;
+        }
+        
+        // 检查是否包含数字
+        if (!/\d/.test(password)) {
+            return false;
+        }
+        
+        // 检查是否包含特殊字符
+        if (!/[@$!%*#?&_\-+=.,;:()\[\]{}|\\\/"']/.test(password)) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    // 获取密码强度提示信息
+    getPasswordRequirements() {
+        return '密码必须至少12位，包含大写字母、小写字母、数字和特殊字符（@$!%*#?&_-+=.,;:等）';
     }
 
     // 用户注册
@@ -177,7 +205,7 @@ class AuthSystem {
         }
         
         if (!this.validatePassword(password)) {
-            alert('请输入有效的邮箱名或密码');
+            alert('密码不符合要求：' + this.getPasswordRequirements());
             return;
         }
         
@@ -464,7 +492,7 @@ if (uploadBtn) {
             statusDiv.style.display = 'block';
             statusDiv.style.backgroundColor = '#f8d7da';
             statusDiv.style.color = '#721c24';
-            statusDiv.textContent = '密码至少8位，且包含字母和数字';
+            statusDiv.textContent = '密码不符合要求：' + this.getPasswordRequirements();
             return;
         }
         

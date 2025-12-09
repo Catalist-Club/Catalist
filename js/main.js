@@ -1003,12 +1003,29 @@ function captureMobileFrame(manual = false) {
     }
     ctx.drawImage(mobileCommandVideo, 0, 0, mobileCommandCanvas.width, mobileCommandCanvas.height);
 
-    mobileCommandCanvas.toBlob(blob => {
+    mobileCommandCanvas.toBlob(async blob => {
         if (!blob) {
             updateMobileStatus('采样失败，请重试。', 'error');
             return;
         }
-        recognizeCatImage(blob, manual ? 'mobile-manual' : 'mobile-auto', {
+        
+        // Compress image if it's larger than 512KB
+        let finalBlob = blob;
+        if (blob.size > 512 * 1024) {
+            try {
+                updateMobileStatus('图片较大，正在压缩...', 'info');
+                finalBlob = await compressImage(blob, 512, (progress, message) => {
+                    updateMobileStatus(message || `压缩中... ${progress}%`, 'info');
+                });
+                updateMobileStatus('压缩完成，开始识别...', 'info');
+            } catch (error) {
+                console.error('Image compression error:', error);
+                updateMobileStatus('压缩失败，使用原图继续...', 'info');
+                // Continue with original blob if compression fails
+            }
+        }
+        
+        recognizeCatImage(finalBlob, manual ? 'mobile-manual' : 'mobile-auto', {
             onStatus: updateMobileStatus,
             onResults: handleMobileRecognitionResults
         });
@@ -1413,12 +1430,29 @@ function captureRecognitionPhoto() {
     recognitionCanvas.height = recognitionVideo.videoHeight || 480;
     context.drawImage(recognitionVideo, 0, 0, recognitionCanvas.width, recognitionCanvas.height);
 
-    recognitionCanvas.toBlob(blob => {
+    recognitionCanvas.toBlob(async blob => {
         if (!blob) {
             setRecognitionStatus('拍照失败，请重试。', 'error');
             return;
         }
-        recognizeCatImage(blob, 'camera');
+        
+        // Compress image if it's larger than 512KB
+        let finalBlob = blob;
+        if (blob.size > 512 * 1024) {
+            try {
+                setRecognitionStatus('图片较大，正在压缩...', 'info');
+                finalBlob = await compressImage(blob, 512, (progress, message) => {
+                    setRecognitionStatus(message || `压缩中... ${progress}%`, 'info');
+                });
+                setRecognitionStatus('压缩完成，开始识别...', 'info');
+            } catch (error) {
+                console.error('Image compression error:', error);
+                setRecognitionStatus('压缩失败，使用原图继续...', 'info');
+                // Continue with original blob if compression fails
+            }
+        }
+        
+        recognizeCatImage(finalBlob, 'camera');
     }, 'image/jpeg', 0.9);
 }
 
@@ -1431,7 +1465,7 @@ function handleRecognitionUpload() {
     recognizeCatImage(file, 'upload');
 }
 
-function recognizeCatImage(imageBlob, source, options = {}) {
+async function recognizeCatImage(imageBlob, source, options = {}) {
     const statusEl = options.statusEl || recognitionStatusEl;
     const statusHandler = typeof options.onStatus === 'function'
         ? options.onStatus
@@ -1440,9 +1474,25 @@ function recognizeCatImage(imageBlob, source, options = {}) {
         ? options.onResults
         : (data) => renderRecognitionResults(data);
 
+    // Compress image if it's larger than 512KB
+    let finalImageBlob = imageBlob;
+    if (imageBlob.size > 512 * 1024) {
+        try {
+            statusHandler('图片较大，正在压缩...', 'info');
+            finalImageBlob = await compressImage(imageBlob, 512, (progress, message) => {
+                statusHandler(message || `压缩中... ${progress}%`, 'info');
+            });
+            statusHandler('压缩完成，正在识别...', 'info');
+        } catch (error) {
+            console.error('Image compression error:', error);
+            statusHandler('图片压缩失败，使用原图继续...', 'info');
+            // Continue with original image if compression fails
+        }
+    }
+
     const formData = new FormData();
     const filename = source === 'camera' ? `capture-${Date.now()}.jpg` : (imageBlob.name || `upload-${Date.now()}.jpg`);
-    formData.append('image', imageBlob, filename);
+    formData.append('image', finalImageBlob, filename);
 
     statusHandler('正在识别，请稍候…', 'info');
 

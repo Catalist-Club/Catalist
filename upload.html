@@ -174,6 +174,7 @@
         </div>
     </footer>
 
+    <script src="js/image-compress.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             // Check if user is logged in
@@ -199,7 +200,7 @@
                 });
         }
 
-        function handleCatUpload(e) {
+        async function handleCatUpload(e) {
             e.preventDefault();
             
             const formData = new FormData(e.target);
@@ -223,10 +224,42 @@
             uploadData.append('gender', catData.gender);
             uploadData.append('description', catData.description);
             
-            // Add image file if selected
+            // Add image file if selected, with compression if needed
             const imageFile = document.getElementById('catImage').files[0];
             if (imageFile) {
-                uploadData.append('image', imageFile);
+                try {
+                    showError(''); // Clear any previous errors
+                    const statusMsg = document.getElementById('errorMessage');
+                    if (statusMsg) {
+                        statusMsg.style.display = 'block';
+                        statusMsg.style.backgroundColor = '#d1ecf1';
+                        statusMsg.style.color = '#0c5460';
+                        statusMsg.textContent = '正在压缩图片...';
+                    }
+                    
+                    // Compress image if it's larger than 512KB
+                    const compressedImage = await compressImage(imageFile, 512, (progress, message) => {
+                        if (statusMsg) {
+                            statusMsg.textContent = message || `压缩中... ${progress}%`;
+                        }
+                    });
+                    
+                    // Create a File object from the compressed Blob
+                    const compressedFile = new File([compressedImage], imageFile.name, {
+                        type: 'image/jpeg',
+                        lastModified: Date.now()
+                    });
+                    
+                    uploadData.append('image', compressedFile);
+                    
+                    if (statusMsg) {
+                        statusMsg.style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error('Image compression error:', error);
+                    showError('图片压缩失败，请重试');
+                    return;
+                }
             }
             
             // Submit to API
