@@ -6,6 +6,7 @@ import mimetypes
 import json
 import sqlite3
 import hashlib
+import bcrypt
 import time
 import urllib.parse
 from urllib.parse import unquote
@@ -31,6 +32,32 @@ from backend.cat_recognition import (
 PORT = 40277
 HOST = "0.0.0.0"
 DB_PATH = "data/cats.db"
+
+def validate_password_strength(password):
+    """验证密码强度
+    要求：至少12位，包含大写字母、小写字母、数字和特殊字符
+    """
+    if not password or len(password) < 12:
+        return False, "密码必须至少12位"
+    
+    # 检查是否包含大写字母
+    if not any(c.isupper() for c in password):
+        return False, "密码必须包含至少一个大写字母"
+    
+    # 检查是否包含小写字母
+    if not any(c.islower() for c in password):
+        return False, "密码必须包含至少一个小写字母"
+    
+    # 检查是否包含数字
+    if not any(c.isdigit() for c in password):
+        return False, "密码必须包含至少一个数字"
+    
+    # 检查是否包含特殊字符
+    special_chars = "@$!%*#?&_-+=.,;:()[]{}|\\/\"'"
+    if not any(c in special_chars for c in password):
+        return False, "密码必须包含至少一个特殊字符（@$!%*#?&_-+=.,;:等）"
+    
+    return True, None
 
 class DatabaseManager:
     def __init__(self, db_path):
@@ -320,7 +347,8 @@ class DatabaseManager:
             )
         else:
             # Create the preset super admin user
-            password_hash = hashlib.sha256("admin123".encode()).hexdigest()
+            # 使用 bcrypt 哈希默认管理员密码
+            password_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             cursor.execute(
                 '''
                 INSERT INTO users (name, email, password_hash, is_admin, is_super_admin, is_verified)
@@ -681,7 +709,8 @@ class DatabaseManager:
     
     def create_user(self, name, email, password):
         """Create a new user with verification token"""
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        # 使用 bcrypt 安全地哈希密码（自动加盐）
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         verification_token = secrets.token_urlsafe(32)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -2670,7 +2699,18 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Super admin account cannot login with password. Please use a single-use admin login link."}).encode())
             return
         
-        if user['password_hash'] == hashlib.sha256(password.encode()).hexdigest():
+        # 使用 bcrypt 验证密码
+        try:
+            password_valid = bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8'))
+        except (ValueError, AttributeError):
+            # 兼容旧密码（SHA256），如果验证失败则尝试旧方法
+            password_valid = user['password_hash'] == hashlib.sha256(password.encode()).hexdigest()
+            if password_valid:
+                # 如果旧密码验证成功，升级为 bcrypt
+                new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                db.update_user_password(user['id'], new_hash)
+        
+        if password_valid:
             # Create auth token
             token = hashlib.sha256(f"{email}{user['password_hash']}".encode()).hexdigest()
             
@@ -2719,10 +2759,12 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Passwords do not match"}).encode())
             return
         
-        if len(password) < 8:
+        # 验证密码强度
+        is_valid, error_msg = validate_password_strength(password)
+        if not is_valid:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Password must be at least 8 characters"}).encode())
+            self.wfile.write(json.dumps({"error": error_msg}).encode())
             return
         
         # Create user
@@ -5067,9 +5109,14 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "All password fields are required"}).encode())
             return
         
-        # Verify current password
-        current_password_hash = hashlib.sha256(current_password.encode()).hexdigest()
-        if user['password_hash'] != current_password_hash:
+        # Verify current password using bcrypt
+        try:
+            password_valid = bcrypt.checkpw(current_password.encode('utf-8'), user['password_hash'].encode('utf-8'))
+        except (ValueError, AttributeError):
+            # 兼容旧密码（SHA256）
+            password_valid = user['password_hash'] == hashlib.sha256(current_password.encode()).hexdigest()
+        
+        if not password_valid:
             self.send_response(401)
             self.end_headers()
             self.wfile.write(json.dumps({"error": "Current password is incorrect"}).encode())
@@ -5082,14 +5129,16 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "New passwords do not match"}).encode())
             return
         
-        if len(new_password) < 8:
+        # 验证密码强度
+        is_valid, error_msg = validate_password_strength(new_password)
+        if not is_valid:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Password must be at least 8 characters"}).encode())
+            self.wfile.write(json.dumps({"error": error_msg}).encode())
             return
         
-        # Update password
-        new_password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        # Update password using bcrypt
+        new_password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         success = db.update_user_password(user['id'], new_password_hash)
         
         if success:
@@ -5442,10 +5491,12 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "New passwords do not match"}).encode())
             return
         
-        if len(new_password) < 8:
+        # 验证密码强度
+        is_valid, error_msg = validate_password_strength(new_password)
+        if not is_valid:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Password must be at least 8 characters"}).encode())
+            self.wfile.write(json.dumps({"error": error_msg}).encode())
             return
         
         # Validate code and get token
@@ -5457,8 +5508,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Invalid or expired verification code"}).encode())
             return
         
-        # Update password
-        new_password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        # Update password using bcrypt
+        new_password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         success = db.update_user_password(user_id, new_password_hash)
         
         if success:

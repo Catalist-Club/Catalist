@@ -147,7 +147,7 @@
                         <div class="form-group">
                             <label for="newPassword">新密码:</label>
                             <input type="password" id="newPassword" required>
-                            <small style="color: #666; display: block; margin-top: 5px;">密码至少8位，包含字母和数字</small>
+                            <small style="color: #666; display: block; margin-top: 5px;">密码必须至少12位，包含大写字母、小写字母、数字和特殊字符（@$!%*#?&_-+=.,;:等）</small>
                         </div>
                         <div class="form-group">
                             <label for="confirmPassword">确认新密码:</label>
@@ -182,6 +182,26 @@
             document.getElementById('profileForm').addEventListener('submit', handleProfileUpdate);
             document.getElementById('passwordForm').addEventListener('submit', handlePasswordChange);
         });
+        
+        // 密码强度验证函数
+        function validatePasswordStrength(password) {
+            if (!password || password.length < 12) {
+                return false;
+            }
+            if (!/[A-Z]/.test(password)) {
+                return false;
+            }
+            if (!/[a-z]/.test(password)) {
+                return false;
+            }
+            if (!/\d/.test(password)) {
+                return false;
+            }
+            if (!/[@$!%*#?&_\-+=.,;:()\[\]{}|\\\/"']/.test(password)) {
+                return false;
+            }
+            return true;
+        }
 
         function checkAuthAndLoadProfile() {
             fetch('/api/current_user', { credentials: 'include' })
@@ -259,9 +279,10 @@
                 return;
             }
             
-            if (newPassword.length < 8) {
+            // 验证密码强度
+            if (!validatePasswordStrength(newPassword)) {
                 statusDiv.className = 'status-message status-error';
-                statusDiv.textContent = '密码至少需要8位';
+                statusDiv.textContent = '密码不符合要求：密码必须至少12位，包含大写字母、小写字母、数字和特殊字符（@$!%*#?&_-+=.,;:等）';
                 statusDiv.style.display = 'block';
                 return;
             }

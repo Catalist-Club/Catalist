@@ -2526,7 +2526,7 @@
             });
         }
 
-        function uploadReferenceImages() {
+        async function uploadReferenceImages() {
             updateStatusBar('referenceUploadStatus', '');
             const catId = document.getElementById('referenceCatSelect').value;
             const fileInput = document.getElementById('catReferenceImages');
@@ -2539,37 +2539,66 @@
                 return;
             }
 
-            const formData = new FormData();
-            Array.from(fileInput.files).forEach(file => formData.append('images', file));
+            try {
+                updateStatusBar('referenceUploadStatus', '正在压缩图片...', 'info');
+                
+                // Compress all images that are larger than 512KB
+                const files = Array.from(fileInput.files);
+                const compressedFiles = [];
+                
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    updateStatusBar('referenceUploadStatus', `正在压缩第 ${i + 1}/${files.length} 张图片...`, 'info');
+                    
+                    let finalFile = file;
+                    if (file.size > 512 * 1024) {
+                        try {
+                            const compressedBlob = await compressImage(file, 512);
+                            // Convert Blob to File
+                            finalFile = new File([compressedBlob], file.name, {
+                                type: 'image/jpeg',
+                                lastModified: Date.now()
+                            });
+                        } catch (error) {
+                            console.error('Compression error for file:', file.name, error);
+                            // Use original file if compression fails
+                        }
+                    }
+                    compressedFiles.push(finalFile);
+                }
 
-            const primaryMode = document.getElementById('referencePrimaryMode').value;
-            if (primaryMode === 'auto') {
-                formData.append('primary_index', '0');
-            } else if (primaryMode === 'none') {
-                formData.append('primary_index', '-1');
-            }
+                const formData = new FormData();
+                compressedFiles.forEach(file => formData.append('images', file));
 
-            updateStatusBar('referenceUploadStatus', '正在上传并生成哈希，请稍候…', 'info');
+                const primaryMode = document.getElementById('referencePrimaryMode').value;
+                if (primaryMode === 'auto') {
+                    formData.append('primary_index', '0');
+                } else if (primaryMode === 'none') {
+                    formData.append('primary_index', '-1');
+                }
 
-            fetch(`/api/admin/cat-profiles/${catId}/reference-images`, {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json().then(data => ({ ok: response.ok, data })))
-            .then(({ ok, data }) => {
-                if (!ok) {
+                updateStatusBar('referenceUploadStatus', '正在上传并生成哈希，请稍候…', 'info');
+
+                const response = await fetch(`/api/admin/cat-profiles/${catId}/reference-images`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                if (!response.ok) {
                     throw new Error(data.error || '上传失败，请稍后重试。');
                 }
+                
                 updateStatusBar('referenceUploadStatus', '参考图像上传成功。', 'success');
                 showActionMessage('参考图像已上传并生成哈希。', 'success');
                 document.getElementById('catReferenceImages').value = '';
                 loadRecognitionCatProfiles();
                 loadReferenceTable(true);
                 loadCats();
-            })
-            .catch(error => {
+            } catch (error) {
+                console.error('Upload error:', error);
                 updateStatusBar('referenceUploadStatus', error.message, 'error');
-            });
+            }
         }
 
         function loadRecognitionSettings() {
@@ -2817,5 +2846,6 @@
         }
 
     </script>
+    <script src="js/image-compress.js"></script>
 </body>
 </html>
