@@ -38,6 +38,17 @@
    ```
    pip install -r requirements.txt
    ```
+   
+### 是这样的，Meow非常严肃地提醒用户如果电脑上没有GPU还硬要安装requirements.txt里的官方完整镜像的话会慢死并且GPU对此加速不显著，请通过如下命令代替requirements.txt:
+  ```
+   TMPDIR=~/pip_tmp pip install \
+    legacy-cgi \
+    -r requirements.txt \
+    --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --break-system-packages \
+    --extra-index-url https://download.pytorch.org/whl/cpu
+  ```
 
 4. （可选）下载动物脸识别模型权重文件并放置在 `models/cat_face/cat_resnet101.pth`。
    - 系统默认使用 ImageNet 预训练的 ResNet18 作为特征提取器。
