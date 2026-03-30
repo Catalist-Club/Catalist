@@ -1,4 +1,4 @@
-# 流浪动物公益社团项目
+<img width="1450" height="719" alt="image" src="https://github.com/user-attachments/assets/d5219461-aaa1-4554-846a-4caba9b3ca16" /># 流浪动物公益社团项目
 
 一个基于邮箱认证的流浪动物公益网站，致力于帮助流浪动物找到温暖的家。
 
@@ -48,6 +48,13 @@
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --break-system-packages \
     --extra-index-url https://download.pytorch.org/whl/cpu
+  ```
+  如果你非常不讨厌浪费磁盘空间，使用如下命令：
+  ```
+    pip install -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --no-cache-dir \
+    --break-system-packages
   ```
 
 4. （可选）下载动物脸识别模型权重文件并放置在 `models/cat_face/cat_resnet101.pth`。
