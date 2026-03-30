@@ -1,4 +1,4 @@
-<img width="1450" height="719" alt="image" src="https://github.com/user-attachments/assets/d5219461-aaa1-4554-846a-4caba9b3ca16" /># 流浪动物公益社团项目
+# 流浪动物公益社团项目
 
 一个基于邮箱认证的流浪动物公益网站，致力于帮助流浪动物找到温暖的家。
 
