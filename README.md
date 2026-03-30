@@ -26,7 +26,7 @@
 
 1. 克隆项目:
    ```
-   git clone [https://github.com/Catalist-Club/Catalist.git](https://github.com/Catalist-Club/Catalist.git)
+   git clone https://github.com/Catalist-Club/Catalist.git
    ```
 
 2. 进入项目目录:
