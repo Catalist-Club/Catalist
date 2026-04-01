@@ -57,8 +57,12 @@
     --break-system-packages
   ```
 
-4. （可选）下载动物脸识别模型权重文件并放置在 `models/cat_face/cat_resnet101.pth`。
-   - 系统默认使用 ImageNet 预训练的 ResNet18 作为特征提取器。
+4. （可选）下载动物脸识别模型权重文件并放置在如下目录：
+   - 猫识别 ResNet101：`models/cat_face/cat_resnet101_gpu_amp_final.pth`（或在后台设置自定义路径）
+   - 狗识别 ResNet101：`models/dog_face/dog_resnet101.pth`（或在后台设置自定义路径）
+   - 猫脸预裁剪 YOLOv8：`models/cat_face/cat_yolov8.pt`
+   - 狗脸预裁剪 YOLOv8：`models/dog_face/dog_yolov8.pt`
+   - 系统默认使用 ImageNet 预训练的 ResNet 作为特征提取器。
    - 我们有已经训练好若干识别模型并且可以从[kaggle](https://www.kaggle.com/code/somehappy/thenbnotebook)上[下载](https://www.kaggle.com/code/somehappy/cat-face-detection-practive-resnet)。
    - 如需更精确的动物脸识别，可下载社区训练好的模型（例如某些 GitHub 仓库提供的 `cat_resnet18.pth`）并通过管理员面板更新模型路径。
 

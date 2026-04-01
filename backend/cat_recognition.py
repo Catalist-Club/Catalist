@@ -16,6 +16,11 @@ except ImportError as exc:  # pragma: no cover - handled at runtime
         "Please install them via `pip install torch torchvision`."
     ) from exc
 
+try:
+    from ultralytics import YOLO
+except ImportError:  # pragma: no cover - optional dependency
+    YOLO = None
+
 
 def _default_device() -> str:
     if torch.cuda.is_available():
@@ -85,20 +90,28 @@ class CatFaceRecognizer:
     def __init__(
         self,
         model_dir: str = "models/cat_face",
-        model_filename: str = "cat_resnet18.pth",
+        model_filename: str = "cat_resnet101_gpu_amp_final.pth",
+        backbone_name: str = "resnet101",
         device: Optional[str] = None,
         hash_length: Optional[int] = None,
+        yolo_model_path: Optional[str] = None,
+        yolo_class_names: Optional[List[str]] = None,
     ):
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
 
         self.model_filename = model_filename
+        self.backbone_name = backbone_name
         self.model_path = _resolve_model_path(self.model_dir, self.model_filename)
         self.device = torch.device(device or _default_device())
         self.hash_length_override = hash_length
+        self.yolo_model_path = yolo_model_path
+        self.yolo_class_names = [name.lower() for name in (yolo_class_names or ["cat"])]
 
         self._model = None
         self._model_lock = threading.Lock()
+        self._yolo_model = None
+        self._yolo_lock = threading.Lock()
 
         self.transform = transforms.Compose(
             [
@@ -111,13 +124,21 @@ class CatFaceRecognizer:
             ]
         )
 
+    def _build_backbone(self) -> torch.nn.Module:
+        backbone_name = (self.backbone_name or "resnet18").lower()
+        if backbone_name == "resnet101":
+            backbone = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        else:
+            backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        backbone.fc = torch.nn.Identity()
+        return backbone
+
     def _load_model(self) -> torch.nn.Module:
         with self._model_lock:
             if self._model is not None:
                 return self._model
 
-            backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-            backbone.fc = torch.nn.Identity()
+            backbone = self._build_backbone()
 
             if self.model_path:
                 try:
@@ -132,12 +153,81 @@ class CatFaceRecognizer:
             self._model = backbone
             return self._model
 
+    def _load_yolo_model(self):
+        if not self.yolo_model_path or not os.path.exists(self.yolo_model_path):
+            return None
+        if YOLO is None:
+            return None
+        with self._yolo_lock:
+            if self._yolo_model is not None:
+                return self._yolo_model
+            try:
+                self._yolo_model = YOLO(self.yolo_model_path)
+            except Exception as exc:  # pragma: no cover
+                print(f"Failed to load YOLO model from {self.yolo_model_path}: {exc}. Using original image.")
+                self._yolo_model = None
+            return self._yolo_model
+
     def set_model_weights(self, model_path: str) -> None:
         if not os.path.exists(model_path):
             raise FileNotFoundError(model_path)
         with self._model_lock:
             self.model_path = model_path
             self._model = None
+
+    def set_yolo_model(self, yolo_model_path: Optional[str]) -> None:
+        with self._yolo_lock:
+            self.yolo_model_path = yolo_model_path
+            self._yolo_model = None
+
+    def _crop_with_yolo(self, image: Image.Image) -> Image.Image:
+        yolo_model = self._load_yolo_model()
+        if yolo_model is None:
+            return image
+
+        try:
+            results = yolo_model.predict(source=np.array(image), verbose=False)
+        except Exception as exc:  # pragma: no cover
+            print(f"YOLO inference failed: {exc}. Using original image.")
+            return image
+
+        if not results:
+            return image
+
+        result = results[0]
+        boxes = getattr(result, "boxes", None)
+        if boxes is None or len(boxes) == 0:
+            return image
+
+        names = getattr(result, "names", {}) or {}
+        best_conf = -1.0
+        best_box = None
+        image_width, image_height = image.size
+
+        for idx in range(len(boxes)):
+            cls_id = int(boxes.cls[idx].item()) if boxes.cls is not None else -1
+            class_name = str(names.get(cls_id, "")).lower()
+            if self.yolo_class_names and class_name not in self.yolo_class_names:
+                continue
+            conf = float(boxes.conf[idx].item()) if boxes.conf is not None else 0.0
+            if conf > best_conf:
+                best_conf = conf
+                xyxy = boxes.xyxy[idx].tolist()
+                best_box = xyxy
+
+        if not best_box:
+            return image
+
+        x1, y1, x2, y2 = best_box
+        left = max(0, int(x1))
+        top = max(0, int(y1))
+        right = min(image_width, int(x2))
+        bottom = min(image_height, int(y2))
+
+        if right <= left or bottom <= top:
+            return image
+
+        return image.crop((left, top, right, bottom))
 
     def embedding_dim(self) -> int:
         model = self._load_model()
@@ -159,6 +249,7 @@ class CatFaceRecognizer:
 
     def compute_signature(self, image_bytes: bytes) -> Tuple[np.ndarray, str, np.ndarray]:
         image = Image.open(io.BytesIO(image_bytes))
+        image = self._crop_with_yolo(image)
         embedding = self._compute_embedding(image)
 
         if self.hash_length_override and self.hash_length_override < embedding.size:

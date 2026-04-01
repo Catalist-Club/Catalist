@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', function() {
     fetchContent('about_mission', 'about-mission-title', 'about-mission-content');
 
     setupRecognition();
+    setupDogRecognition();
     setupCatSearch();
     setupAdoptionModal();
     setupMobileCommandCenter();
@@ -26,6 +27,12 @@ let recognitionCanvas = null;
 let recognitionStatusEl = null;
 let recognitionResultsEl = null;
 let recognitionFileInput = null;
+let dogRecognitionStream = null;
+let dogRecognitionVideo = null;
+let dogRecognitionCanvas = null;
+let dogRecognitionStatusEl = null;
+let dogRecognitionResultsEl = null;
+let dogRecognitionFileInput = null;
 let mobileCommandVideo = null;
 let mobileCommandCanvas = null;
 let mobileCommandStream = null;
@@ -1671,6 +1678,224 @@ function setRecognitionStatus(message, type = 'info', targetEl = recognitionStat
     if (!targetEl) return;
     targetEl.textContent = message || '';
     targetEl.className = `recognition-status ${type}`;
+}
+
+// ---------------- 狗脸识别功能 ----------------
+
+function setupDogRecognition() {
+    dogRecognitionVideo = document.getElementById('dogRecognitionVideo');
+    dogRecognitionCanvas = document.getElementById('dogRecognitionCanvas');
+    dogRecognitionStatusEl = document.getElementById('dogRecognitionStatus');
+    dogRecognitionResultsEl = document.getElementById('dogRecognitionResults');
+    dogRecognitionFileInput = document.getElementById('dogRecognitionFileInput');
+
+    const startCameraBtn = document.getElementById('dogStartCameraBtn');
+    const capturePhotoBtn = document.getElementById('dogCapturePhotoBtn');
+    const uploadRecognizeBtn = document.getElementById('dogUploadRecognizeBtn');
+
+    if (!dogRecognitionVideo || !dogRecognitionCanvas || !startCameraBtn || !capturePhotoBtn || !uploadRecognizeBtn) {
+        return;
+    }
+
+    startCameraBtn.addEventListener('click', startDogRecognitionCamera);
+    capturePhotoBtn.addEventListener('click', captureDogRecognitionPhoto);
+    uploadRecognizeBtn.addEventListener('click', handleDogRecognitionUpload);
+
+    window.addEventListener('beforeunload', stopDogRecognitionCamera);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopDogRecognitionCamera();
+        }
+    });
+}
+
+function startDogRecognitionCamera() {
+    if (dogRecognitionStream) {
+        setRecognitionStatus('摄像头已开启。', 'success', dogRecognitionStatusEl);
+        return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setRecognitionStatus('当前浏览器不支持摄像头访问，请尝试上传图片识别。', 'error', dogRecognitionStatusEl);
+        return;
+    }
+
+    setRecognitionStatus('正在请求摄像头权限…', 'info', dogRecognitionStatusEl);
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        .then(stream => {
+            dogRecognitionStream = stream;
+            dogRecognitionVideo.srcObject = stream;
+            dogRecognitionVideo.play();
+            setRecognitionStatus('摄像头已开启，可以点击“拍摄并识别”。', 'success', dogRecognitionStatusEl);
+        })
+        .catch(error => {
+            console.error('Error starting dog camera:', error);
+            setRecognitionStatus('无法开启摄像头，请检查权限或直接上传图片。', 'error', dogRecognitionStatusEl);
+        });
+}
+
+function stopDogRecognitionCamera() {
+    if (dogRecognitionStream) {
+        dogRecognitionStream.getTracks().forEach(track => track.stop());
+        dogRecognitionStream = null;
+    }
+    if (dogRecognitionVideo) {
+        dogRecognitionVideo.srcObject = null;
+    }
+}
+
+function captureDogRecognitionPhoto() {
+    if (!dogRecognitionStream) {
+        setRecognitionStatus('请先点击“开启摄像头”。', 'error', dogRecognitionStatusEl);
+        return;
+    }
+    if (!dogRecognitionCanvas || !dogRecognitionVideo) {
+        setRecognitionStatus('系统初始化失败，请刷新页面重试。', 'error', dogRecognitionStatusEl);
+        return;
+    }
+
+    const context = dogRecognitionCanvas.getContext('2d');
+    dogRecognitionCanvas.width = dogRecognitionVideo.videoWidth || 640;
+    dogRecognitionCanvas.height = dogRecognitionVideo.videoHeight || 480;
+    context.drawImage(dogRecognitionVideo, 0, 0, dogRecognitionCanvas.width, dogRecognitionCanvas.height);
+
+    dogRecognitionCanvas.toBlob(async blob => {
+        if (!blob) {
+            setRecognitionStatus('拍照失败，请重试。', 'error', dogRecognitionStatusEl);
+            return;
+        }
+
+        let finalBlob = blob;
+        if (blob.size > 512 * 1024) {
+            try {
+                setRecognitionStatus('图片较大，正在压缩...', 'info', dogRecognitionStatusEl);
+                finalBlob = await compressImage(blob, 512, (progress, message) => {
+                    setRecognitionStatus(message || `压缩中... ${progress}%`, 'info', dogRecognitionStatusEl);
+                });
+                setRecognitionStatus('压缩完成，开始识别...', 'info', dogRecognitionStatusEl);
+            } catch (error) {
+                console.error('Dog image compression error:', error);
+                setRecognitionStatus('压缩失败，使用原图继续...', 'info', dogRecognitionStatusEl);
+            }
+        }
+
+        recognizeDogImage(finalBlob, 'camera');
+    }, 'image/jpeg', 0.9);
+}
+
+function handleDogRecognitionUpload() {
+    if (!dogRecognitionFileInput || !dogRecognitionFileInput.files.length) {
+        setRecognitionStatus('请先选择要上传的图片。', 'error', dogRecognitionStatusEl);
+        return;
+    }
+    const file = dogRecognitionFileInput.files[0];
+    recognizeDogImage(file, 'upload');
+}
+
+async function recognizeDogImage(imageBlob, source) {
+    let finalImageBlob = imageBlob;
+    if (imageBlob.size > 512 * 1024) {
+        try {
+            setRecognitionStatus('图片较大，正在压缩...', 'info', dogRecognitionStatusEl);
+            finalImageBlob = await compressImage(imageBlob, 512, (progress, message) => {
+                setRecognitionStatus(message || `压缩中... ${progress}%`, 'info', dogRecognitionStatusEl);
+            });
+            setRecognitionStatus('压缩完成，正在识别...', 'info', dogRecognitionStatusEl);
+        } catch (error) {
+            console.error('Dog image compression error:', error);
+            setRecognitionStatus('图片压缩失败，使用原图继续...', 'info', dogRecognitionStatusEl);
+        }
+    }
+
+    const formData = new FormData();
+    const filename = source === 'camera' ? `dog-capture-${Date.now()}.jpg` : (imageBlob.name || `dog-upload-${Date.now()}.jpg`);
+    formData.append('image', finalImageBlob, filename);
+
+    setRecognitionStatus('正在识别，请稍候…', 'info', dogRecognitionStatusEl);
+
+    return fetch('/api/dogs/recognize', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+    })
+    .then(response => {
+        if (response.status === 401) {
+            setRecognitionStatus('请先登录后再使用狗脸识别功能。', 'error', dogRecognitionStatusEl);
+            if (window.authSystem) {
+                window.authSystem.openModal('login');
+            }
+            throw new Error('未登录');
+        }
+        return response.json().then(data => ({ ok: response.ok, data }));
+    })
+    .then(({ ok, data }) => {
+        if (!ok) {
+            throw new Error(data.error || '识别失败，请稍后重试。');
+        }
+        setRecognitionStatus('识别完成。', 'success', dogRecognitionStatusEl);
+        renderDogRecognitionResults(data);
+        if (source === 'upload' && dogRecognitionFileInput) {
+            dogRecognitionFileInput.value = '';
+        }
+    })
+    .catch(error => {
+        if (error.message !== '未登录') {
+            console.error('Dog recognition error:', error);
+            setRecognitionStatus(error.message || '识别失败，请稍后重试。', 'error', dogRecognitionStatusEl);
+        }
+    });
+}
+
+function renderDogRecognitionResults(result) {
+    if (!dogRecognitionResultsEl) return;
+    dogRecognitionResultsEl.innerHTML = '';
+
+    const matches = result.matches || [];
+    if (!matches.length || !matches[0].matched) {
+        dogRecognitionResultsEl.innerHTML = '<p class="recognition-placeholder">未找到匹配的狗狗信息。您可以将照片提交给管理员补充到数据库中。</p>';
+        return;
+    }
+
+    matches.forEach(match => {
+        const card = document.createElement('div');
+        card.className = 'recognition-result-card';
+
+        const similarity = typeof match.similarity === 'number' ? Math.round(match.similarity * 100) : null;
+        const similarityText = similarity !== null ? `${similarity}%` : '未知';
+        const matchBadge = match.matched ? '<span class="recognition-badge" style="background-color:#d4edda;color:#155724;">可能是已登记的狗狗</span>' : '<span class="recognition-badge">待确认</span>';
+        const distanceText = typeof match.hamming_distance === 'number' ? `${match.hamming_distance}` : '—';
+
+        if (match.dog) {
+            const dog = match.dog;
+            const sterilizedText = dog.sterilized ? '已绝育' : '未绝育/未知';
+            const microchipText = dog.microchipped ? '有芯片' : '无芯片/未知';
+            const locationText = dog.last_known_location || '暂无记录';
+            const notes = dog.special_notes || '暂无说明';
+            const markings = dog.unique_markings || '暂无描述';
+            const referenceImage = match.reference_image_path ? `<img src="/${match.reference_image_path}" alt="${dog.name || '参考图'}" style="width:100%;max-width:240px;border-radius:6px;margin-top:8px;">` : '';
+
+            card.innerHTML = `
+                <h3>${dog.name || '未命名狗狗'}</h3>
+                <p>${matchBadge}<span class="recognition-badge">匹配度 ${similarityText}</span><span class="recognition-badge">哈希距离 ${distanceText}</span></p>
+                <p><strong>编号:</strong> ${dog.identification_code || '暂无'}</p>
+                <p><strong>年龄:</strong> ${dog.age || '未知'} · <strong>性别:</strong> ${dog.gender || '未知'}</p>
+                <p><strong>绝育情况:</strong> ${sterilizedText} · <strong>芯片:</strong> ${microchipText}</p>
+                <p><strong>显著特征:</strong> ${markings}</p>
+                <p><strong>最新位置:</strong> ${locationText}</p>
+                <p><strong>档案备注:</strong> ${notes}</p>
+                ${referenceImage}
+            `;
+        } else {
+            card.innerHTML = `
+                <h3>未找到匹配的档案</h3>
+                <p>${matchBadge}<span class="recognition-badge">匹配度 ${similarityText}</span><span class="recognition-badge">哈希距离 ${distanceText}</span></p>
+                <p>当前数据库中暂无与该照片高度相似的狗狗，您可以联系管理员补充档案。</p>
+            `;
+        }
+
+        dogRecognitionResultsEl.appendChild(card);
+    });
 }
 
 function setupMobileCruiseFAB() {

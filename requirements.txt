@@ -3,4 +3,5 @@ torchvision
 numpy
 Pillow
 bcrypt
+ultralytics
 

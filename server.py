@@ -28,6 +28,7 @@ from backend.cat_recognition import (
     hex_to_bits,
     summarize_embeddings,
 )
+from backend.dog_recognition import DogFaceRecognizer
 
 PORT = 40277
 HOST = "0.0.0.0"
@@ -145,6 +146,82 @@ class DatabaseManager:
                 image_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cat_id) REFERENCES cats(id)
+            )
+        '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS dogs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                age TEXT,
+                gender TEXT,
+                description TEXT,
+                image_path TEXT,
+                owner_id INTEGER,
+                is_approved BOOLEAN DEFAULT 0,
+                is_rejected BOOLEAN DEFAULT 0,
+                sterilized BOOLEAN DEFAULT 0,
+                special_notes TEXT,
+                unique_markings TEXT,
+                microchipped BOOLEAN DEFAULT 0,
+                last_known_location TEXT,
+                identification_code TEXT,
+                reference_hash_hex TEXT,
+                reference_hash_length INTEGER,
+                embedding_vector BLOB,
+                hash_version TEXT DEFAULT 'v1',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        '''
+        )
+
+        self._ensure_column(cursor, 'dogs', 'is_rejected', 'BOOLEAN DEFAULT 0')
+        self._ensure_column(cursor, 'dogs', 'sterilized', 'BOOLEAN DEFAULT 0')
+        self._ensure_column(cursor, 'dogs', 'special_notes', 'TEXT')
+        self._ensure_column(cursor, 'dogs', 'unique_markings', 'TEXT')
+        self._ensure_column(cursor, 'dogs', 'microchipped', 'BOOLEAN DEFAULT 0')
+        self._ensure_column(cursor, 'dogs', 'last_known_location', 'TEXT')
+        self._ensure_column(cursor, 'dogs', 'identification_code', 'TEXT')
+        self._ensure_column(cursor, 'dogs', 'reference_hash_hex', 'TEXT')
+        self._ensure_column(cursor, 'dogs', 'reference_hash_length', 'INTEGER')
+        self._ensure_column(cursor, 'dogs', 'embedding_vector', 'BLOB')
+        self._ensure_column(cursor, 'dogs', 'hash_version', "TEXT DEFAULT 'v1'")
+        self._ensure_column(cursor, 'dogs', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS dog_reference_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dog_id INTEGER NOT NULL,
+                image_path TEXT NOT NULL,
+                hash_hex TEXT NOT NULL,
+                hash_length INTEGER NOT NULL,
+                embedding_vector BLOB,
+                is_primary BOOLEAN DEFAULT 0,
+                order_index INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (dog_id) REFERENCES dogs(id) ON DELETE CASCADE
+            )
+        '''
+        )
+
+        self._ensure_column(cursor, 'dog_reference_images', 'order_index', 'INTEGER DEFAULT 0')
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS dog_recognition_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dog_id INTEGER,
+                matched BOOLEAN,
+                match_score REAL,
+                hash_distance INTEGER,
+                request_metadata TEXT,
+                image_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (dog_id) REFERENCES dogs(id)
             )
         '''
         )
@@ -363,7 +440,14 @@ class DatabaseManager:
             'cat_recognition.max_results': '3',
             'cat_recognition.max_hamming': '120',
             'cat_recognition.model_path': '',
+            'cat_recognition.yolo_model_path': '',
             'cat_recognition.hash_length_override': '',
+            'dog_recognition.threshold': '0.78',
+            'dog_recognition.max_results': '3',
+            'dog_recognition.max_hamming': '120',
+            'dog_recognition.model_path': '',
+            'dog_recognition.yolo_model_path': '',
+            'dog_recognition.hash_length_override': '',
         }
         for key, value in defaults.items():
             cursor.execute('SELECT 1 FROM settings WHERE key = ?', (key,))
@@ -1479,6 +1563,77 @@ class DatabaseManager:
         conn.close()
         return event_id
 
+    def get_dog_by_id(self, dog_id: int) -> Optional[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM dogs WHERE id = ?", (dog_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return dict(result) if result else None
+
+    def list_dog_reference_vectors(self) -> List[Dict]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                dri.id AS reference_id,
+                dri.dog_id,
+                dri.hash_hex,
+                dri.hash_length,
+                dri.embedding_vector,
+                dri.is_primary,
+                d.name AS dog_name,
+                d.is_approved,
+                d.is_rejected
+            FROM dog_reference_images dri
+            JOIN dogs d ON d.id = dri.dog_id
+        '''
+        )
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+
+    def record_dog_recognition_event(
+        self,
+        *,
+        dog_id: Optional[int],
+        matched: bool,
+        match_score: float,
+        hash_distance: Optional[int],
+        metadata: Dict,
+        image_path: Optional[str],
+    ) -> int:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO dog_recognition_events (
+                dog_id,
+                matched,
+                match_score,
+                hash_distance,
+                request_metadata,
+                image_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''',
+            (
+                dog_id,
+                1 if matched else 0,
+                match_score,
+                hash_distance,
+                json.dumps(metadata, ensure_ascii=False),
+                image_path,
+            ),
+        )
+        event_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return event_id
+
     def add_location_history(
         self,
         cat_id: int,
@@ -1936,7 +2091,12 @@ def create_cat_recognizer_from_settings() -> CatFaceRecognizer:
         except ValueError:
             hash_override = None
 
-    recognizer = CatFaceRecognizer(hash_length=hash_override)
+    yolo_model_path = (db.get_setting('cat_recognition.yolo_model_path') or '').strip() or None
+    if not yolo_model_path:
+        default_cat_yolo = os.path.join('models', 'cat_face', 'cat_yolov8.pt')
+        if os.path.exists(default_cat_yolo):
+            yolo_model_path = default_cat_yolo
+    recognizer = CatFaceRecognizer(hash_length=hash_override, yolo_model_path=yolo_model_path)
 
     model_path_setting = db.get_setting('cat_recognition.model_path')
     if model_path_setting:
@@ -1949,6 +2109,36 @@ def create_cat_recognizer_from_settings() -> CatFaceRecognizer:
     return recognizer
 
 cat_recognizer = create_cat_recognizer_from_settings()
+
+
+def create_dog_recognizer_from_settings() -> DogFaceRecognizer:
+    hash_override_setting = db.get_setting('dog_recognition.hash_length_override')
+    hash_override = None
+    if hash_override_setting:
+        try:
+            hash_override = int(hash_override_setting)
+        except ValueError:
+            hash_override = None
+
+    yolo_model_path = (db.get_setting('dog_recognition.yolo_model_path') or '').strip() or None
+    if not yolo_model_path:
+        default_dog_yolo = os.path.join('models', 'dog_face', 'dog_yolov8.pt')
+        if os.path.exists(default_dog_yolo):
+            yolo_model_path = default_dog_yolo
+    recognizer = DogFaceRecognizer(hash_length=hash_override, yolo_model_path=yolo_model_path)
+
+    model_path_setting = db.get_setting('dog_recognition.model_path')
+    if model_path_setting:
+        try:
+            recognizer.set_model_weights(model_path_setting)
+        except FileNotFoundError:
+            print(f"[DogRecognition] Model not found at {model_path_setting}. Using default ImageNet weights.")
+        except RuntimeError as exc:
+            print(f"[DogRecognition] Failed to load model weights: {exc}.")
+    return recognizer
+
+
+dog_recognizer = create_dog_recognizer_from_settings()
 
 def reprocess_reference_images(cat_id: int, reference_ids: Optional[List[int]] = None) -> int:
     """
@@ -2050,7 +2240,35 @@ def get_recognition_settings() -> Dict:
         "max_results": max_results,
         "max_hamming": max_hamming,
         "model_path": db.get_setting('cat_recognition.model_path') or "",
+        "yolo_model_path": db.get_setting('cat_recognition.yolo_model_path') or "",
         "hash_length_override": db.get_setting('cat_recognition.hash_length_override') or "",
+    }
+
+
+def get_dog_recognition_settings() -> Dict:
+    try:
+        threshold = float(db.get_setting('dog_recognition.threshold') or 0.78)
+    except ValueError:
+        threshold = 0.78
+
+    try:
+        max_results = int(db.get_setting('dog_recognition.max_results') or 3)
+    except ValueError:
+        max_results = 3
+
+    max_hamming_setting = db.get_setting('dog_recognition.max_hamming')
+    try:
+        max_hamming = int(max_hamming_setting) if max_hamming_setting else None
+    except ValueError:
+        max_hamming = None
+
+    return {
+        "threshold": threshold,
+        "max_results": max_results,
+        "max_hamming": max_hamming,
+        "model_path": db.get_setting('dog_recognition.model_path') or "",
+        "yolo_model_path": db.get_setting('dog_recognition.yolo_model_path') or "",
+        "hash_length_override": db.get_setting('dog_recognition.hash_length_override') or "",
     }
 
 
@@ -2070,6 +2288,17 @@ def sanitize_cat_record(cat: Optional[Dict]) -> Optional[Dict]:
     sanitized = dict(cat)
     sanitized.pop('embedding_vector', None)
     for key in ('sterilized', 'microchipped', 'is_adopted', 'is_approved', 'is_rejected'):
+        if key in sanitized and sanitized[key] is not None:
+            sanitized[key] = bool(sanitized[key])
+    return sanitized
+
+
+def sanitize_dog_record(dog: Optional[Dict]) -> Optional[Dict]:
+    if not dog:
+        return None
+    sanitized = dict(dog)
+    sanitized.pop('embedding_vector', None)
+    for key in ('sterilized', 'microchipped', 'is_approved', 'is_rejected'):
         if key in sanitized and sanitized[key] is not None:
             sanitized[key] = bool(sanitized[key])
     return sanitized
@@ -2324,6 +2553,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Invalid cat or reference image ID"}).encode())
         elif self.path == '/api/cats/recognize':
             self.handle_recognize_cat()
+        elif self.path == '/api/dogs/recognize':
+            self.handle_recognize_dog()
         elif self.path == '/api/cats/location':
             self.handle_add_location()
         elif self.path == '/api/admin/location-history' or self.path.startswith('/api/admin/location-history?'):
@@ -2564,6 +2795,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_get_notification_from_email()
             elif self.path == '/api/cat-recognition/settings':
                 self.handle_get_recognition_settings()
+            elif self.path == '/api/dog-recognition/settings':
+                self.handle_get_dog_recognition_settings()
             elif self.path == '/api/admin/cat-references':
                 self.handle_get_reference_images()
             elif self.path == '/api/admin/cat-recognition/events':
@@ -3449,6 +3682,33 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(settings).encode())
 
+    def handle_get_dog_recognition_settings(self):
+        """Return current dog recognition settings and simple stats."""
+        user = self.get_current_user()
+        if not user:
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Authentication required"}).encode())
+            return
+
+        settings = get_dog_recognition_settings()
+        reference_records = db.list_dog_reference_vectors()
+        approved_reference_records = [
+            record for record in reference_records
+            if record.get('is_approved') and not record.get('is_rejected')
+        ]
+        dog_ids = {record['dog_id'] for record in approved_reference_records}
+        settings.update({
+            "reference_count": len(approved_reference_records),
+            "dog_count": len(dog_ids),
+            "device": str(dog_recognizer.device),
+        })
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(settings).encode())
+
     def handle_update_recognition_settings(self):
         """Update recognition parameters (admin only)."""
         user = self.get_current_user()
@@ -3510,6 +3770,11 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         if 'model_path' in data:
             model_path = (data['model_path'] or '').strip()
             updates['cat_recognition.model_path'] = model_path
+            reset_recognizer = True
+
+        if 'yolo_model_path' in data:
+            yolo_model_path = (data['yolo_model_path'] or '').strip()
+            updates['cat_recognition.yolo_model_path'] = yolo_model_path
             reset_recognizer = True
 
         if 'hash_length_override' in data:
@@ -3676,6 +3941,160 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         top_match = next((match for match in raw_matches if match.matched), None)
         recognition_event_id = db.record_recognition_event(
             cat_id=top_match.cat_id if top_match else None,
+            matched=bool(top_match),
+            match_score=float(top_match.similarity) if top_match else 0.0,
+            hash_distance=int(top_match.hamming_distance) if top_match else None,
+            metadata={
+                "threshold": settings['threshold'],
+                "max_results": settings['max_results'],
+                "references_considered": len(references),
+                "matches_returned": len(raw_matches),
+            },
+            image_path=query_image_path,
+        )
+
+        response_payload = {
+            "matches": confirmed_matches,
+            "suggestions": top_suggestions,
+            "settings": settings,
+            "query_image_path": query_image_path,
+            "hash_hex": hash_hex,
+            "recognition_event_id": recognition_event_id,
+        }
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(response_payload).encode())
+
+    def handle_recognize_dog(self):
+        """Match an uploaded dog photo against known dogs."""
+        user = self.get_current_user()
+        if not user:
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Authentication required"}).encode())
+            return
+
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': self.headers.get('Content-Type')}
+        )
+
+        if 'image' not in form:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Image file is required"}).encode())
+            return
+
+        file_item = form['image']
+        if isinstance(file_item, list) and file_item:
+            file_item = file_item[0]
+
+        filename = getattr(file_item, 'filename', '') if file_item is not None else ''
+        if not filename:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Image file is required"}).encode())
+            return
+
+        image_bytes = file_item.file.read()
+        if not image_bytes:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Uploaded image is empty"}).encode())
+            return
+
+        try:
+            embedding, hash_hex, hash_bits = dog_recognizer.compute_signature(image_bytes)
+        except Exception as exc:  # pragma: no cover
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Failed to process image: {exc}"}).encode())
+            return
+
+        settings = get_dog_recognition_settings()
+        reference_records = db.list_dog_reference_vectors()
+        references = []
+        reference_lookup = {}
+
+        for record in reference_records:
+            if not record.get('is_approved') or record.get('is_rejected'):
+                continue
+            hash_hex_ref = record.get('hash_hex')
+            hash_length = record.get('hash_length')
+            if not hash_hex_ref or not hash_length:
+                continue
+            ref_bits = hex_to_bits(hash_hex_ref, hash_length)
+            embedding_blob = record.get('embedding_vector')
+            ref_embedding = blob_to_embedding(embedding_blob) if embedding_blob else np.array([], dtype=np.float32)
+            references.append((record['dog_id'], record['reference_id'], ref_bits, ref_embedding))
+            reference_lookup[record['reference_id']] = record
+
+        raw_matches = (
+            dog_recognizer.match_against(
+                query_hash=hash_bits,
+                query_embedding=embedding,
+                references=references,
+                max_results=settings['max_results'],
+                similarity_threshold=settings['threshold'],
+                max_hamming=settings['max_hamming'],
+            )
+            if references
+            else []
+        )
+
+        dog_cache = {}
+        best_by_dog: Dict[str, Dict] = {}
+
+        for result in raw_matches:
+            dog_info = None
+            if result.cat_id is not None:
+                dog_id = result.cat_id
+                if dog_id not in dog_cache:
+                    dog_cache[dog_id] = sanitize_dog_record(db.get_dog_by_id(dog_id))
+                dog_info = dog_cache.get(dog_id)
+            reference_meta = reference_lookup.get(result.reference_image_id or -1)
+            payload_item = {
+                "dog": dog_info,
+                "similarity": result.similarity,
+                "hamming_distance": result.hamming_distance,
+                "matched": result.matched,
+                "reference_image_id": result.reference_image_id,
+                "reference_image_path": reference_meta.get('image_path') if reference_meta else None,
+            }
+            key = (
+                f"dog:{result.cat_id}"
+                if result.cat_id is not None
+                else f"ref:{result.reference_image_id}"
+            )
+            existing = best_by_dog.get(key)
+            if not existing or (
+                payload_item["similarity"] > existing["similarity"]
+                or (
+                    payload_item["similarity"] == existing["similarity"]
+                    and payload_item["hamming_distance"] < existing["hamming_distance"]
+                )
+            ):
+                best_by_dog[key] = payload_item
+
+        results_payload = sorted(
+            best_by_dog.values(),
+            key=lambda item: (-item["similarity"], item["hamming_distance"]),
+        )
+
+        confirmed_matches = [item for item in results_payload if item.get("matched")]
+        top_suggestions = [] if confirmed_matches else results_payload[:1]
+
+        save_query = str(form.getvalue('save_query', 'true')).lower() != 'false'
+        query_image_path = None
+        if save_query:
+            query_image_path = save_uploaded_file('uploads/dog_queries', file_item.filename, image_bytes)
+
+        top_match = next((match for match in raw_matches if match.matched), None)
+        recognition_event_id = db.record_dog_recognition_event(
+            dog_id=top_match.cat_id if top_match else None,
             matched=bool(top_match),
             match_score=float(top_match.similarity) if top_match else 0.0,
             hash_distance=int(top_match.hamming_distance) if top_match else None,

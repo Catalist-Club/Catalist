@@ -886,6 +886,24 @@ footer {
     align-items: flex-start;
 }
 
+.recognition-dual-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+}
+
+.recognition-panel {
+    background-color: #ffffff;
+    border: 1px solid #e4e4e4;
+    border-radius: 10px;
+    padding: 18px;
+}
+
+.recognition-panel-title {
+    margin-bottom: 14px;
+    color: #2d3a2d;
+}
+
 .recognition-controls {
     flex: 1 1 320px;
     background-color: #fff;
@@ -997,6 +1015,10 @@ footer {
 @media (max-width: 768px) {
     .recognition-wrapper {
         flex-direction: column;
+    }
+
+    .recognition-dual-grid {
+        grid-template-columns: 1fr;
     }
 
     .recognition-buttons {
