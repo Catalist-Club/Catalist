@@ -705,7 +705,7 @@
                         </div>
 
                         <div class="panel-card">
-                            <h3>识别参数设置</h3>
+                            <h3>猫识别参数设置</h3>
                             <div class="form-grid">
                                 <label>匹配阈值
                                     <input type="number" id="recognitionThreshold" step="0.01" min="0.1" max="0.99">
@@ -719,6 +719,9 @@
                                 <label>模型权重路径
                                     <input type="text" id="recognitionModelPath" placeholder="本地模型文件路径或留空使用默认">
                                 </label>
+                                <label>YOLO 预裁剪模型路径
+                                    <input type="text" id="recognitionYoloModelPath" placeholder="可选：YOLOv8 模型路径，留空使用默认/关闭">
+                                </label>
                                 <label>哈希长度覆盖
                                     <input type="number" id="recognitionHashLength" min="64" step="1" placeholder="留空使用默认长度">
                                 </label>
@@ -726,6 +729,33 @@
                                 <button type="button" id="reprocessAllCatsBtn" class="btn btn-secondary" style="margin-top: 10px;">重新处理所有猫咪图像</button>
                                 <div id="recognitionSettingsStatus" class="status-bar"></div>
                                 <div id="recognitionStats" class="info-note"></div>
+                            </div>
+                        </div>
+
+                        <div class="panel-card">
+                            <h3>狗识别参数设置</h3>
+                            <div class="form-grid">
+                                <label>匹配阈值
+                                    <input type="number" id="dogRecognitionThreshold" step="0.01" min="0.1" max="0.99">
+                                </label>
+                                <label>返回结果数量
+                                    <input type="number" id="dogRecognitionMaxResults" min="1" max="10">
+                                </label>
+                                <label>最大哈希距离
+                                    <input type="number" id="dogRecognitionMaxHamming" min="0" placeholder="留空表示自动">
+                                </label>
+                                <label>模型权重路径
+                                    <input type="text" id="dogRecognitionModelPath" placeholder="本地模型文件路径或留空使用默认">
+                                </label>
+                                <label>YOLO 预裁剪模型路径
+                                    <input type="text" id="dogRecognitionYoloModelPath" placeholder="可选：YOLOv8 模型路径，留空使用默认/关闭">
+                                </label>
+                                <label>哈希长度覆盖
+                                    <input type="number" id="dogRecognitionHashLength" min="64" step="1" placeholder="留空使用默认长度">
+                                </label>
+                                <button type="button" id="saveDogRecognitionSettingsBtn" class="btn btn-primary">保存狗识别设置</button>
+                                <div id="dogRecognitionSettingsStatus" class="status-bar"></div>
+                                <div id="dogRecognitionStats" class="info-note"></div>
                             </div>
                         </div>
                     </div>
@@ -990,6 +1020,7 @@
             loadDashboardData();
             loadResendApiKey();
             loadRecognitionSettings();
+            loadDogRecognitionSettings();
             loadRecognitionCatProfiles();
             loadReferenceTable();
             loadRecognitionEvents();
@@ -997,6 +1028,8 @@
             document.getElementById('logoutBtn').addEventListener('click', logout);
             document.getElementById('refreshBtn').addEventListener('click', () => {
                 loadDashboardData();
+                loadRecognitionSettings();
+                loadDogRecognitionSettings();
                 loadRecognitionCatProfiles(true);
                 loadReferenceTable(true);
                 loadRecognitionEvents(true);
@@ -1032,6 +1065,10 @@
             const saveRecognitionSettingsBtn = document.getElementById('saveRecognitionSettingsBtn');
             if (saveRecognitionSettingsBtn) {
                 saveRecognitionSettingsBtn.addEventListener('click', saveRecognitionSettings);
+            }
+            const saveDogRecognitionSettingsBtn = document.getElementById('saveDogRecognitionSettingsBtn');
+            if (saveDogRecognitionSettingsBtn) {
+                saveDogRecognitionSettingsBtn.addEventListener('click', saveDogRecognitionSettings);
             }
             const reprocessAllCatsBtn = document.getElementById('reprocessAllCatsBtn');
             if (reprocessAllCatsBtn) {
@@ -2614,6 +2651,7 @@
                     document.getElementById('recognitionMaxResults').value = settings.max_results || 3;
                     document.getElementById('recognitionMaxHamming').value = settings.max_hamming ?? '';
                     document.getElementById('recognitionModelPath').value = settings.model_path || '';
+                    document.getElementById('recognitionYoloModelPath').value = settings.yolo_model_path || '';
                     document.getElementById('recognitionHashLength').value = settings.hash_length_override || '';
 
                     const stats = document.getElementById('recognitionStats');
@@ -2634,6 +2672,7 @@
             const maxResultsValue = document.getElementById('recognitionMaxResults').value;
             const maxHammingValue = document.getElementById('recognitionMaxHamming').value;
             const modelPathValue = document.getElementById('recognitionModelPath').value.trim();
+            const yoloModelPathValue = document.getElementById('recognitionYoloModelPath').value.trim();
             const hashLengthValue = document.getElementById('recognitionHashLength').value;
 
             const payload = {};
@@ -2641,6 +2680,7 @@
             if (maxResultsValue) payload.max_results = maxResultsValue;
             payload.max_hamming = maxHammingValue;
             payload.model_path = modelPathValue;
+            payload.yolo_model_path = yoloModelPathValue;
             payload.hash_length_override = hashLengthValue;
 
             fetch('/api/admin/cat-recognition/settings', {
@@ -2662,6 +2702,72 @@
             })
             .catch(error => {
                 updateStatusBar('recognitionSettingsStatus', error.message, 'error');
+            });
+        }
+
+        function loadDogRecognitionSettings() {
+            fetch('/api/dog-recognition/settings', { credentials: 'include' })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('无法获取狗识别设置，请稍后重试。');
+                    }
+                    return response.json();
+                })
+                .then(settings => {
+                    document.getElementById('dogRecognitionThreshold').value = settings.threshold?.toFixed(2) || '';
+                    document.getElementById('dogRecognitionMaxResults').value = settings.max_results || 3;
+                    document.getElementById('dogRecognitionMaxHamming').value = settings.max_hamming ?? '';
+                    document.getElementById('dogRecognitionModelPath').value = settings.model_path || '';
+                    document.getElementById('dogRecognitionYoloModelPath').value = settings.yolo_model_path || '';
+                    document.getElementById('dogRecognitionHashLength').value = settings.hash_length_override || '';
+
+                    const stats = document.getElementById('dogRecognitionStats');
+                    if (stats) {
+                        const referenceCount = settings.reference_count ?? 0;
+                        const dogCount = settings.dog_count ?? 0;
+                        stats.textContent = `参考图像：${referenceCount} · 档案数量：${dogCount} · 运行设备：${settings.device || 'CPU'}`;
+                    }
+                })
+                .catch(error => {
+                    updateStatusBar('dogRecognitionSettingsStatus', error.message, 'error');
+                });
+        }
+
+        function saveDogRecognitionSettings() {
+            updateStatusBar('dogRecognitionSettingsStatus', '正在保存设置…', 'info');
+            const thresholdValue = document.getElementById('dogRecognitionThreshold').value;
+            const maxResultsValue = document.getElementById('dogRecognitionMaxResults').value;
+            const maxHammingValue = document.getElementById('dogRecognitionMaxHamming').value;
+            const modelPathValue = document.getElementById('dogRecognitionModelPath').value.trim();
+            const yoloModelPathValue = document.getElementById('dogRecognitionYoloModelPath').value.trim();
+            const hashLengthValue = document.getElementById('dogRecognitionHashLength').value;
+
+            const payload = {};
+            if (thresholdValue) payload.threshold = thresholdValue;
+            if (maxResultsValue) payload.max_results = maxResultsValue;
+            payload.max_hamming = maxHammingValue;
+            payload.model_path = modelPathValue;
+            payload.yolo_model_path = yoloModelPathValue;
+            payload.hash_length_override = hashLengthValue;
+
+            fetch('/api/admin/dog-recognition/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json().then(data => ({ ok: response.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    throw new Error(data.errors ? data.errors.join('，') : (data.error || '保存失败'));
+                }
+                updateStatusBar('dogRecognitionSettingsStatus', '狗识别设置已更新。', 'success');
+                showActionMessage('狗识别参数保存成功。', 'success');
+                loadDogRecognitionSettings();
+            })
+            .catch(error => {
+                updateStatusBar('dogRecognitionSettingsStatus', error.message, 'error');
             });
         }
 

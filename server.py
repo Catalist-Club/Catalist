@@ -2570,6 +2570,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Invalid location ID"}).encode())
         elif self.path == '/api/admin/cat-recognition/settings':
             self.handle_update_recognition_settings()
+        elif self.path == '/api/admin/dog-recognition/settings':
+            self.handle_update_dog_recognition_settings()
         elif self.path == '/api/logout':
             self.handle_logout()
         elif self.path.startswith('/api/cats/'):
@@ -3810,6 +3812,108 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps({"message": "Recognition settings updated", "settings": settings}).encode())
+
+    def handle_update_dog_recognition_settings(self):
+        """Update dog recognition parameters (admin only)."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        payload = self.rfile.read(content_length) if content_length else b''
+        try:
+            data = json.loads(payload.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        updates = {}
+        errors = []
+
+        if 'threshold' in data:
+            try:
+                threshold = float(data['threshold'])
+                if not 0.0 < threshold < 1.0:
+                    raise ValueError
+                updates['dog_recognition.threshold'] = str(threshold)
+            except (TypeError, ValueError):
+                errors.append("threshold must be a float between 0 and 1")
+
+        if 'max_results' in data:
+            try:
+                max_results = int(data['max_results'])
+                if max_results <= 0:
+                    raise ValueError
+                updates['dog_recognition.max_results'] = str(max_results)
+            except (TypeError, ValueError):
+                errors.append("max_results must be a positive integer")
+
+        if 'max_hamming' in data:
+            value = data['max_hamming']
+            if value in (None, '', 'null'):
+                updates['dog_recognition.max_hamming'] = ''
+            else:
+                try:
+                    max_hamming = int(value)
+                    if max_hamming < 0:
+                        raise ValueError
+                    updates['dog_recognition.max_hamming'] = str(max_hamming)
+                except (TypeError, ValueError):
+                    errors.append("max_hamming must be a non-negative integer or blank")
+
+        reset_recognizer = False
+
+        if 'model_path' in data:
+            model_path = (data['model_path'] or '').strip()
+            updates['dog_recognition.model_path'] = model_path
+            reset_recognizer = True
+
+        if 'yolo_model_path' in data:
+            yolo_model_path = (data['yolo_model_path'] or '').strip()
+            updates['dog_recognition.yolo_model_path'] = yolo_model_path
+            reset_recognizer = True
+
+        if 'hash_length_override' in data:
+            hash_length_value = (data['hash_length_override'] or '').strip()
+            if hash_length_value == '':
+                updates['dog_recognition.hash_length_override'] = ''
+                reset_recognizer = True
+            else:
+                try:
+                    override_int = int(hash_length_value)
+                    if override_int <= 0:
+                        raise ValueError
+                    updates['dog_recognition.hash_length_override'] = str(override_int)
+                    reset_recognizer = True
+                except (TypeError, ValueError):
+                    errors.append("hash_length_override must be a positive integer or blank")
+
+        if errors:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"errors": errors}).encode())
+            return
+
+        for key, value in updates.items():
+            db.set_setting(key, value)
+
+        global dog_recognizer
+        if reset_recognizer:
+            dog_recognizer = create_dog_recognizer_from_settings()
+
+        settings = get_dog_recognition_settings()
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": "Dog recognition settings updated", "settings": settings}).encode())
 
     def handle_recognize_cat(self):
         """Match an uploaded cat photo against known cats."""
