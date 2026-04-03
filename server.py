@@ -482,6 +482,19 @@ class DatabaseManager:
         conn.commit()
         conn.close()
         return cat_id
+
+    def add_dog(self, name, age, gender, description, image_path, owner_id):
+        """Add a new dog to database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO dogs (name, age, gender, description, image_path, owner_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (name, age, gender, description, image_path, owner_id))
+        dog_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return dog_id
     
     def get_all_cats_admin(self):
         """Get all cats (including pending) for admin view with owner info"""
@@ -500,6 +513,24 @@ class DatabaseManager:
         cats = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return cats
+
+    def get_all_dogs_admin(self):
+        """Get all dogs (including pending) for admin view with owner info"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT 
+                d.*,
+                u.name AS owner_name,
+                u.email AS owner_email
+            FROM dogs d
+            LEFT JOIN users u ON d.owner_id = u.id
+            ORDER BY d.created_at DESC
+        ''')
+        dogs = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return dogs
     
     def update_cat_approval(self, cat_id, is_approved, is_rejected=0):
         """Update cat approval/rejection status"""
@@ -510,6 +541,18 @@ class DatabaseManager:
             SET is_approved = ?, is_rejected = ?
             WHERE id = ?
         ''', (is_approved, is_rejected, cat_id))
+        conn.commit()
+        conn.close()
+
+    def update_dog_approval(self, dog_id, is_approved, is_rejected=0):
+        """Update dog approval/rejection status"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE dogs 
+            SET is_approved = ?, is_rejected = ?
+            WHERE id = ?
+        ''', (is_approved, is_rejected, dog_id))
         conn.commit()
         conn.close()
     
@@ -1192,6 +1235,31 @@ class DatabaseManager:
         conn.close()
         return updated
 
+    def update_dog_profile(self, dog_id: int, payload: Dict) -> bool:
+        if not payload:
+            return False
+        columns = []
+        values = []
+        for key, value in payload.items():
+            columns.append(f"{key} = ?")
+            values.append(value)
+        values.append(dog_id)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE dogs
+            SET {', '.join(columns)}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """,
+            values,
+        )
+        conn.commit()
+        updated = cursor.rowcount > 0
+        conn.close()
+        return updated
+
     def add_cat_reference_image(
         self,
         cat_id: int,
@@ -1223,6 +1291,49 @@ class DatabaseManager:
         ''',
             (
                 cat_id,
+                image_path,
+                hash_hex,
+                hash_length,
+                sqlite3.Binary(embedding_bytes),
+                1 if is_primary else 0,
+                new_order,
+            ),
+        )
+        reference_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return reference_id
+
+    def add_dog_reference_image(
+        self,
+        dog_id: int,
+        image_path: str,
+        hash_hex: str,
+        hash_length: int,
+        embedding_bytes: bytes,
+        is_primary: bool = False,
+    ) -> int:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COALESCE(MAX(order_index), -1) FROM dog_reference_images WHERE dog_id = ?', (dog_id,))
+        max_order = cursor.fetchone()[0] or -1
+        new_order = max_order + 1
+
+        cursor.execute(
+            '''
+            INSERT INTO dog_reference_images (
+                dog_id,
+                image_path,
+                hash_hex,
+                hash_length,
+                embedding_vector,
+                is_primary,
+                order_index
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+            (
+                dog_id,
                 image_path,
                 hash_hex,
                 hash_length,
@@ -1273,6 +1384,43 @@ class DatabaseManager:
         conn.close()
         return results
 
+    def get_dog_reference_images(self, dog_id: int, include_embedding: bool = False, reference_ids: Optional[List[int]] = None) -> List[Dict]:
+        columns = [
+            "id",
+            "dog_id",
+            "image_path",
+            "hash_hex",
+            "hash_length",
+            "is_primary",
+            "order_index",
+            "created_at",
+        ]
+        if include_embedding:
+            columns.append("embedding_vector")
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        params = [dog_id]
+        filter_sql = ""
+        if reference_ids:
+            placeholders = ','.join('?' for _ in reference_ids)
+            filter_sql = f" AND id IN ({placeholders})"
+            params.extend(reference_ids)
+
+        cursor.execute(
+            f'''
+            SELECT {', '.join(columns)}
+            FROM dog_reference_images
+            WHERE dog_id = ? {filter_sql}
+            ORDER BY order_index ASC, created_at DESC
+        ''',
+            tuple(params),
+        )
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+
     def update_cat_reference_image_embedding(
         self,
         reference_id: int,
@@ -1286,6 +1434,36 @@ class DatabaseManager:
         cursor.execute(
             '''
             UPDATE cat_reference_images
+            SET hash_hex = ?,
+                hash_length = ?,
+                embedding_vector = ?
+            WHERE id = ?
+        ''',
+            (
+                hash_hex,
+                hash_length,
+                sqlite3.Binary(embedding_bytes),
+                reference_id,
+            ),
+        )
+        updated = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return updated
+
+    def update_dog_reference_image_embedding(
+        self,
+        reference_id: int,
+        hash_hex: str,
+        hash_length: int,
+        embedding_bytes: bytes,
+    ) -> bool:
+        """Update the embedding and hash for a dog reference image"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE dog_reference_images
             SET hash_hex = ?,
                 hash_length = ?,
                 embedding_vector = ?
@@ -1325,10 +1503,40 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def refresh_dog_signature(self, dog_id: int, aggregated_hash_hex: Optional[str], hash_length: Optional[int], embedding_bytes: Optional[bytes]) -> None:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE dogs
+            SET reference_hash_hex = ?,
+                reference_hash_length = ?,
+                embedding_vector = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''',
+            (
+                aggregated_hash_hex,
+                hash_length,
+                sqlite3.Binary(embedding_bytes) if embedding_bytes else None,
+                dog_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
     def count_reference_images(self, cat_id: int) -> int:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM cat_reference_images WHERE cat_id = ?', (cat_id,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
+    def count_dog_reference_images(self, dog_id: int) -> int:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM dog_reference_images WHERE dog_id = ?', (dog_id,))
         count = cursor.fetchone()[0]
         conn.close()
         return count
@@ -1363,6 +1571,32 @@ class DatabaseManager:
         
         return deleted
 
+    def delete_dog_reference_image(self, reference_id: int) -> bool:
+        """Delete a dog reference image by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT image_path, dog_id FROM dog_reference_images WHERE id = ?', (reference_id,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return False
+
+        image_path, dog_id = result
+        cursor.execute('DELETE FROM dog_reference_images WHERE id = ?', (reference_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if deleted and image_path:
+            try:
+                full_path = os.path.join('.', image_path)
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+            except Exception as e:
+                print(f"Warning: Could not delete dog image file {image_path}: {e}")
+
+        return deleted
+
     def update_reference_image_order(self, cat_id: int, reference_orders: List[Dict]) -> bool:
         """Update order_index for multiple reference images. reference_orders is a list of {id: order_index}"""
         conn = sqlite3.connect(self.db_path)
@@ -1381,6 +1615,28 @@ class DatabaseManager:
         except Exception as e:
             conn.rollback()
             print(f"Error updating reference image order: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def update_dog_reference_image_order(self, dog_id: int, reference_orders: List[Dict]) -> bool:
+        """Update order_index for multiple dog reference images. reference_orders is a list of {id: order_index}"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            for ref_order in reference_orders:
+                ref_id = ref_order.get('id')
+                order_index = ref_order.get('order_index', 0)
+                if ref_id:
+                    cursor.execute(
+                        'UPDATE dog_reference_images SET order_index = ? WHERE id = ? AND dog_id = ?',
+                        (order_index, ref_id, dog_id)
+                    )
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"Error updating dog reference image order: {e}")
             return False
         finally:
             conn.close()
@@ -1410,6 +1666,29 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def move_dog_reference_image(self, reference_id: int, new_dog_id: int) -> bool:
+        """Move a dog reference image from one dog to another"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT COALESCE(MAX(order_index), -1) FROM dog_reference_images WHERE dog_id = ?', (new_dog_id,))
+            max_order = cursor.fetchone()[0] or -1
+            new_order = max_order + 1
+
+            cursor.execute(
+                'UPDATE dog_reference_images SET dog_id = ?, order_index = ? WHERE id = ?',
+                (new_dog_id, new_order, reference_id)
+            )
+            moved = cursor.rowcount > 0
+            conn.commit()
+            return moved
+        except Exception as e:
+            conn.rollback()
+            print(f"Error moving dog reference image: {e}")
+            return False
+        finally:
+            conn.close()
+
     def set_primary_reference_image(self, cat_id: int, reference_id: int) -> bool:
         """Set a reference image as primary (and unset others for the same cat)"""
         conn = sqlite3.connect(self.db_path)
@@ -1428,6 +1707,26 @@ class DatabaseManager:
         except Exception as e:
             conn.rollback()
             print(f"Error setting primary reference image: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def set_primary_dog_reference_image(self, dog_id: int, reference_id: int) -> bool:
+        """Set a dog reference image as primary (and unset others for the same dog)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('UPDATE dog_reference_images SET is_primary = 0 WHERE dog_id = ?', (dog_id,))
+            cursor.execute(
+                'UPDATE dog_reference_images SET is_primary = 1 WHERE id = ? AND dog_id = ?',
+                (reference_id, dog_id)
+            )
+            updated = cursor.rowcount > 0
+            conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            print(f"Error setting primary dog reference image: {e}")
             return False
         finally:
             conn.close()
@@ -2190,6 +2489,45 @@ def reprocess_reference_images(cat_id: int, reference_ids: Optional[List[int]] =
     
     return reprocessed_count
 
+def reprocess_dog_reference_images(dog_id: int, reference_ids: Optional[List[int]] = None) -> int:
+    """
+    Reprocess dog reference images through the current model and update their embeddings.
+    Returns the number of images successfully reprocessed.
+    """
+    global dog_recognizer
+    dog_recognizer = create_dog_recognizer_from_settings()
+
+    references = db.get_dog_reference_images(dog_id, include_embedding=False, reference_ids=reference_ids)
+    if not references:
+        return 0
+
+    reprocessed_count = 0
+    for reference in references:
+        reference_id = reference.get('id')
+        image_path = reference.get('image_path')
+
+        if not image_path or not reference_id:
+            continue
+
+        if not os.path.exists(image_path):
+            continue
+
+        try:
+            with open(image_path, 'rb') as handle:
+                image_bytes = handle.read()
+            embedding, hash_hex, hash_bits = dog_recognizer.compute_signature(image_bytes)
+            db.update_dog_reference_image_embedding(
+                reference_id=reference_id,
+                hash_hex=hash_hex,
+                hash_length=int(hash_bits.size),
+                embedding_bytes=embedding_to_blob(embedding),
+            )
+            reprocessed_count += 1
+        except Exception as exc:
+            print(f"Warning: Failed to reprocess dog reference image {reference_id}: {exc}")
+
+    return reprocessed_count
+
 def recompute_cat_signature(cat_id: int, reference_ids: Optional[List[int]] = None) -> None:
     references = db.get_cat_reference_images(cat_id, include_embedding=True, reference_ids=reference_ids)
     if not references:
@@ -2216,6 +2554,34 @@ def recompute_cat_signature(cat_id: int, reference_ids: Optional[List[int]] = No
         aggregated_hash_length = hex_to_bits(aggregated_hash_hex).size
 
     db.refresh_cat_signature(cat_id, aggregated_hash_hex, aggregated_hash_length, embedding_bytes)
+
+
+def recompute_dog_signature(dog_id: int, reference_ids: Optional[List[int]] = None) -> None:
+    references = db.get_dog_reference_images(dog_id, include_embedding=True, reference_ids=reference_ids)
+    if not references:
+        db.refresh_dog_signature(dog_id, None, None, None)
+        return
+
+    embeddings = []
+    hash_bitsets = []
+    for reference in references:
+        embedding_blob = reference.get('embedding_vector')
+        if embedding_blob:
+            embeddings.append(blob_to_embedding(embedding_blob))
+        hash_hex = reference.get('hash_hex')
+        hash_length = reference.get('hash_length')
+        if hash_hex:
+            hash_bitsets.append(hex_to_bits(hash_hex, hash_length))
+
+    aggregated_embedding = summarize_embeddings([vec for vec in embeddings if vec.size])
+    aggregated_hash_hex = aggregate_hashes(hash_bitsets)
+
+    embedding_bytes = embedding_to_blob(aggregated_embedding) if aggregated_embedding is not None else None
+    aggregated_hash_length = None
+    if aggregated_hash_hex:
+        aggregated_hash_length = hex_to_bits(aggregated_hash_hex).size
+
+    db.refresh_dog_signature(dog_id, aggregated_hash_hex, aggregated_hash_length, embedding_bytes)
 
 
 def get_recognition_settings() -> Dict:
@@ -2521,6 +2887,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_add_cat()
         elif self.path == '/api/admin/cat-profiles':
             self.handle_admin_create_cat_profile()
+        elif self.path == '/api/admin/dog-profiles':
+            self.handle_admin_create_dog_profile()
         elif self.path.startswith('/api/admin/cat-profiles/') and self.path.endswith('/reference-images'):
             path_parts = [part for part in self.path.split('/') if part]
             try:
@@ -2530,12 +2898,31 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": "Invalid cat ID"}).encode())
+        elif self.path.startswith('/api/admin/dog-profiles/') and self.path.endswith('/reference-images'):
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                dog_id = int(path_parts[3])
+                self.handle_upload_dog_reference_images(dog_id)
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid dog ID"}).encode())
         elif self.path.startswith('/api/admin/reference-images/') and '/move' in self.path:
             # POST /api/admin/reference-images/{reference_id}/move
             path_parts = [part for part in self.path.split('/') if part]
             try:
                 reference_id = int(path_parts[3])
                 self.handle_move_reference_image(reference_id)
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid reference image ID"}).encode())
+        elif self.path.startswith('/api/admin/dog-reference-images/') and '/move' in self.path:
+            # POST /api/admin/dog-reference-images/{reference_id}/move
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                reference_id = int(path_parts[3])
+                self.handle_move_dog_reference_image(reference_id)
             except (ValueError, IndexError):
                 self.send_response(400)
                 self.end_headers()
@@ -2551,6 +2938,17 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": "Invalid cat or reference image ID"}).encode())
+        elif self.path.startswith('/api/admin/dogs/') and '/reference-images/' in self.path and '/set-primary' in self.path:
+            # POST /api/admin/dogs/{dog_id}/reference-images/{reference_id}/set-primary
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                dog_id = int(path_parts[3])
+                reference_id = int(path_parts[5])
+                self.handle_set_primary_dog_reference_image(dog_id, reference_id)
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid dog or reference image ID"}).encode())
         elif self.path == '/api/cats/recognize':
             self.handle_recognize_cat()
         elif self.path == '/api/dogs/recognize':
@@ -2572,6 +2970,15 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_update_recognition_settings()
         elif self.path == '/api/admin/dog-recognition/settings':
             self.handle_update_dog_recognition_settings()
+        elif self.path.startswith('/api/admin/dogs/') and self.path.endswith('/regenerate-hash'):
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                dog_id = int(path_parts[3])
+                self.handle_regenerate_dog_hash(dog_id)
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid dog ID"}).encode())
         elif self.path == '/api/logout':
             self.handle_logout()
         elif self.path.startswith('/api/cats/'):
@@ -2626,6 +3033,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "Invalid cat ID"}).encode())
         elif self.path == '/api/admin/cats/reprocess-all':
             self.handle_reprocess_all_cats()
+        elif self.path == '/api/admin/dogs/reprocess-all':
+            self.handle_reprocess_all_dogs()
         elif self.path == '/api/messages/broadcast':
             self.handle_broadcast_message()
         elif self.path.startswith('/api/messages/') and self.path.endswith('/read'):
@@ -2708,6 +3117,17 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 pass
             self.send_response(400)
             self.end_headers()
+        elif self.path.startswith('/api/admin/dogs/'):
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                if len(path_parts) >= 4 and path_parts[0] == 'api' and path_parts[1] == 'admin' and path_parts[2] == 'dogs':
+                    dog_id = int(path_parts[3])
+                    self.handle_update_dog_admin(dog_id)
+                    return
+            except ValueError:
+                pass
+            self.send_response(400)
+            self.end_headers()
         elif self.path.startswith('/api/admin/reference-images/') and self.path.endswith('/order'):
             # PUT /api/admin/reference-images/{cat_id}/order
             path_parts = [part for part in self.path.split('/') if part]
@@ -2718,6 +3138,15 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": "Invalid cat ID"}).encode())
+        elif self.path.startswith('/api/admin/dog-reference-images/') and self.path.endswith('/order'):
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                dog_id = int(path_parts[3])
+                self.handle_update_dog_reference_image_order(dog_id)
+            except (ValueError, IndexError):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid dog ID"}).encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -2730,6 +3159,18 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if len(path_parts) >= 4 and path_parts[0] == 'api' and path_parts[1] == 'admin' and path_parts[2] == 'reference-images':
                     reference_id = int(path_parts[3])
                     self.handle_delete_reference_image(reference_id)
+                    return
+            except (ValueError, IndexError):
+                pass
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid reference image ID"}).encode())
+        elif self.path.startswith('/api/admin/dog-reference-images/'):
+            path_parts = [part for part in self.path.split('/') if part]
+            try:
+                if len(path_parts) >= 4 and path_parts[0] == 'api' and path_parts[1] == 'admin' and path_parts[2] == 'dog-reference-images':
+                    reference_id = int(path_parts[3])
+                    self.handle_delete_dog_reference_image(reference_id)
                     return
             except (ValueError, IndexError):
                 pass
@@ -2758,6 +3199,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_get_cats()
             elif self.path == '/api/admin/cats':
                 self.handle_get_cats_admin()
+            elif self.path == '/api/admin/dogs':
+                self.handle_get_dogs_admin()
             elif self.path == '/api/current_user':
                 self.handle_get_current_user()
             elif self.path == '/api/users':
@@ -2785,6 +3228,17 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(json.dumps({"error": "Invalid cat ID"}).encode())
+            elif self.path == '/api/admin/dog-profiles':
+                self.handle_get_dog_profiles_admin()
+            elif self.path.startswith('/api/admin/dog-profiles/'):
+                path_parts = [part for part in self.path.split('/') if part]
+                try:
+                    dog_id = int(path_parts[3])
+                    self.handle_get_dog_profile_admin(dog_id)
+                except (ValueError, IndexError):
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Invalid dog ID"}).encode())
             elif self.path == '/api/admin/settings/resend-api-key':
                 self.handle_get_resend_api_key()
             elif self.path == '/api/admin/settings/resend-from-email':
@@ -2885,6 +3339,8 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             elif path == '/profile':
                 self.path = '/profile.html'
             elif path == '/admin-cat-editor':
+                self.path = '/admin-cat-editor.html'
+            elif path == '/admin-animal-editor':
                 self.path = '/admin-cat-editor.html'
             elif path == '/admin-location-map':
                 self.path = '/admin-location-map.html'
@@ -3334,6 +3790,69 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"message": "Cat profile created", "cat": cat_profile}).encode())
 
+    def handle_admin_create_dog_profile(self):
+        """Create a new dog profile from the admin console."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+
+        if content_length <= 0:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Empty request body"}).encode())
+            return
+
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        name = (data.get('name') or '').strip()
+        gender = (data.get('gender') or '').strip()
+        age = (data.get('age') or '').strip()
+        description = (data.get('description') or '').strip()
+
+        if not name or not gender:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Name and gender are required"}).encode())
+            return
+
+        dog_id = db.add_dog(name, age, gender, description, None, user['id'])
+        db.update_dog_approval(dog_id, 1, 0)
+
+        profile_updates = {
+            'sterilized': 1 if data.get('sterilized') else 0,
+            'microchipped': 1 if data.get('microchipped') else 0,
+            'special_notes': data.get('special_notes') or data.get('specialNotes') or '',
+            'unique_markings': data.get('unique_markings') or data.get('uniqueMarkings') or '',
+            'last_known_location': data.get('last_known_location') or data.get('lastKnownLocation') or '',
+            'identification_code': data.get('identification_code') or data.get('identificationCode') or '',
+        }
+        sanitized_updates = {key: value for key, value in profile_updates.items() if value is not None}
+        if sanitized_updates:
+            db.update_dog_profile(dog_id, sanitized_updates)
+
+        dog_profile = sanitize_dog_record(db.get_dog_by_id(dog_id)) or {}
+        dog_profile['reference_count'] = 0
+
+        self.send_response(201)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": "Dog profile created", "dog": dog_profile}).encode())
+
     def handle_upload_cat_reference_images(self, cat_id: int):
         """Upload reference images for a cat and compute embeddings/hashes."""
         user = self.get_current_user()
@@ -3436,6 +3955,108 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             "saved": saved_references
         }).encode())
 
+    def handle_upload_dog_reference_images(self, dog_id: int):
+        """Upload reference images for a dog and compute embeddings/hashes."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        dog = db.get_dog_by_id(dog_id)
+        if not dog:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Dog not found"}).encode())
+            return
+
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': self.headers.get('Content-Type')}
+        )
+
+        if 'images' not in form:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "No images provided"}).encode())
+            return
+
+        file_items = form['images']
+        if not isinstance(file_items, list):
+            file_items = [file_items]
+
+        if not file_items:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "No images provided"}).encode())
+            return
+
+        primary_index = -1
+        primary_field = form.getvalue('primary_index')
+        if primary_field is not None:
+            try:
+                primary_index = int(primary_field)
+            except ValueError:
+                primary_index = -1
+        elif str(form.getvalue('set_primary', 'false')).lower() == 'true':
+            primary_index = 0
+
+        saved_references = []
+
+        for index, file_item in enumerate(file_items):
+            filename = getattr(file_item, 'filename', '')
+            if not filename:
+                continue
+            file_bytes = file_item.file.read()
+            if not file_bytes:
+                continue
+
+            try:
+                embedding, hash_hex, hash_bits = dog_recognizer.compute_signature(file_bytes)
+            except Exception as exc:  # pragma: no cover
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"Failed to process image: {exc}"}).encode())
+                return
+
+            hash_length = int(hash_bits.size)
+            storage_dir = os.path.join('uploads', 'dog_references', str(dog_id))
+            stored_path = save_uploaded_file(storage_dir, filename, file_bytes)
+
+            is_primary = index == primary_index and primary_index >= 0
+            reference_id = db.add_dog_reference_image(
+                dog_id=dog_id,
+                image_path=stored_path,
+                hash_hex=hash_hex,
+                hash_length=hash_length,
+                embedding_bytes=embedding_to_blob(embedding),
+                is_primary=is_primary,
+            )
+
+            if is_primary:
+                db.update_dog_profile(dog_id, {"image_path": stored_path})
+
+            saved_references.append({
+                "id": reference_id,
+                "image_path": stored_path,
+                "hash_length": hash_length,
+                "is_primary": is_primary,
+            })
+
+        recompute_dog_signature(dog_id)
+        references = db.get_dog_reference_images(dog_id)
+
+        self.send_response(201)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            "message": "Reference images uploaded",
+            "references": references,
+            "saved": saved_references
+        }).encode())
+
     def handle_update_cat_admin(self, cat_id: int):
         """Update cat details from admin editor"""
         user = self.get_current_user()
@@ -3491,6 +4112,62 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps({"message": "Cat updated", "cat": cat}).encode())
+
+    def handle_update_dog_admin(self, dog_id: int):
+        """Update dog details from admin editor"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        payload = self.rfile.read(content_length) if content_length else b'{}'
+        try:
+            data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        allowed_fields = {
+            "name", "age", "gender", "description", "special_notes",
+            "unique_markings", "last_known_location", "sterilized",
+            "microchipped", "is_approved", "is_rejected"
+        }
+        bool_fields = {"sterilized", "microchipped", "is_approved", "is_rejected"}
+        updates = {}
+        for field in allowed_fields:
+            if field in data:
+                value = data.get(field)
+                if field in bool_fields:
+                    updates[field] = 1 if value else 0
+                else:
+                    updates[field] = value
+
+        if not updates:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "No valid fields to update"}).encode())
+            return
+
+        success = db.update_dog_profile(dog_id, updates)
+        if not success:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Dog not found"}).encode())
+            return
+
+        dog = sanitize_dog_record(db.get_dog_by_id(dog_id))
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": "Dog updated", "dog": dog}).encode())
 
     def handle_regenerate_cat_hash(self, cat_id: int):
         """Regenerate aggregate hash by reprocessing images through current model"""
@@ -3550,6 +4227,62 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             "reprocessed_count": reprocessed_count
         }).encode())
 
+    def handle_regenerate_dog_hash(self, dog_id: int):
+        """Regenerate aggregate hash for dog reference images."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        payload = self.rfile.read(content_length) if content_length else b'{}'
+        try:
+            data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        reference_ids = data.get('reference_ids')
+        if reference_ids is not None:
+            if not isinstance(reference_ids, list) or not all(isinstance(rid, int) for rid in reference_ids):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "reference_ids must be a list of integers"}).encode())
+                return
+
+        try:
+            reprocessed_count = reprocess_dog_reference_images(dog_id, reference_ids=reference_ids)
+            if reprocessed_count == 0:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "No reference images could be reprocessed"}).encode())
+                return
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Failed to reprocess images: {exc}"}).encode())
+            return
+
+        ids = reference_ids if reference_ids else None
+        recompute_dog_signature(dog_id, reference_ids=ids)
+        dog = sanitize_dog_record(db.get_dog_by_id(dog_id))
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            "message": f"Hash regenerated ({reprocessed_count} images reprocessed)",
+            "dog": dog,
+            "reprocessed_count": reprocessed_count
+        }).encode())
+
     def handle_reprocess_all_cats(self):
         """Reprocess all reference images for all cats through the current model"""
         user = self.get_current_user()
@@ -3597,6 +4330,50 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": f"Failed to reprocess all cats: {exc}"}).encode())
 
+    def handle_reprocess_all_dogs(self):
+        """Reprocess all reference images for all dogs through the current model"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            dogs = db.get_all_dogs_admin()
+            total_dogs = 0
+            total_images = 0
+            failed_dogs = []
+
+            for dog in dogs:
+                dog_id = dog.get('id')
+                if not dog_id:
+                    continue
+
+                try:
+                    reprocessed_count = reprocess_dog_reference_images(dog_id, reference_ids=None)
+                    if reprocessed_count > 0:
+                        recompute_dog_signature(dog_id, reference_ids=None)
+                        total_dogs += 1
+                        total_images += reprocessed_count
+                except Exception as exc:
+                    dog_name = dog.get('name', f'Dog {dog_id}')
+                    failed_dogs.append({"dog_id": dog_id, "name": dog_name, "error": str(exc)})
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "message": f"Reprocessing completed: {total_dogs} dogs, {total_images} images reprocessed",
+                "total_dogs": total_dogs,
+                "total_images": total_images,
+                "failed_dogs": failed_dogs
+            }).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Failed to reprocess all dogs: {exc}"}).encode())
+
     def handle_get_cat_profiles_admin(self):
         """Return detailed cat profiles for the admin console."""
         user = self.get_current_user()
@@ -3628,6 +4405,61 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
 
+    def handle_get_dogs_admin(self):
+        """Return all dogs for admin list view."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            dogs = db.get_all_dogs_admin()
+            for dog in dogs:
+                dog['reference_count'] = db.count_dog_reference_images(dog.get('id')) if dog.get('id') else 0
+                dog['is_approved'] = bool(dog.get('is_approved'))
+                dog['is_rejected'] = bool(dog.get('is_rejected'))
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(dogs).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def handle_get_dog_profiles_admin(self):
+        """Return detailed dog profiles for the admin console."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            dogs = db.get_all_dogs_admin()
+            for dog in dogs:
+                dog_id = dog.get('id')
+                sanitized = sanitize_dog_record(dog) or {}
+                references = db.get_dog_reference_images(dog_id)
+                sanitized['reference_images'] = references
+                sanitized['reference_count'] = len(references)
+                sanitized['owner_name'] = dog.get('owner_name')
+                sanitized['owner_email'] = dog.get('owner_email')
+                sanitized['hash_available'] = bool(dog.get('reference_hash_hex'))
+                dog.clear()
+                dog.update(sanitized)
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(dogs).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
     def handle_get_cat_profile_admin(self, cat_id: int):
         """Return a single cat profile with reference images."""
         user = self.get_current_user()
@@ -3651,6 +4483,35 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         sanitized['owner_name'] = cat.get('owner_name')
         sanitized['owner_email'] = cat.get('owner_email')
         sanitized['hash_available'] = bool(cat.get('reference_hash_hex'))
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(sanitized).encode())
+
+    def handle_get_dog_profile_admin(self, dog_id: int):
+        """Return a single dog profile with reference images."""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        dog = db.get_dog_by_id(dog_id)
+        if not dog:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Dog not found"}).encode())
+            return
+
+        references = db.get_dog_reference_images(dog_id)
+        sanitized = sanitize_dog_record(dog) or {}
+        sanitized['reference_images'] = references
+        sanitized['reference_count'] = len(references)
+        sanitized['owner_name'] = dog.get('owner_name')
+        sanitized['owner_email'] = dog.get('owner_email')
+        sanitized['hash_available'] = bool(dog.get('reference_hash_hex'))
 
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
@@ -4278,6 +5139,31 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
 
+    def handle_delete_dog_reference_image(self, reference_id: int):
+        """Delete a dog reference image"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            deleted = db.delete_dog_reference_image(reference_id)
+            if deleted:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"message": "Reference image deleted"}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Reference image not found"}).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
     def handle_update_reference_image_order(self, cat_id: int):
         """Update the order of reference images for a cat"""
         user = self.get_current_user()
@@ -4309,6 +5195,51 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             success = db.update_reference_image_order(cat_id, reference_orders)
+            if success:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"message": "Image order updated"}).encode())
+            else:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Failed to update order"}).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def handle_update_dog_reference_image_order(self, dog_id: int):
+        """Update the order of reference images for a dog"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        payload = self.rfile.read(content_length) if content_length else b'{}'
+        try:
+            data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        reference_orders = data.get('orders', [])
+        if not isinstance(reference_orders, list):
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "orders must be a list"}).encode())
+            return
+
+        try:
+            success = db.update_dog_reference_image_order(dog_id, reference_orders)
             if success:
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
@@ -4381,6 +5312,63 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
 
+    def handle_move_dog_reference_image(self, reference_id: int):
+        """Move a dog reference image to a different dog"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            content_length = 0
+        payload = self.rfile.read(content_length) if content_length else b'{}'
+        try:
+            data = json.loads(payload.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid JSON payload"}).encode())
+            return
+
+        new_dog_id = data.get('new_dog_id')
+        if not new_dog_id:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "new_dog_id is required"}).encode())
+            return
+
+        try:
+            new_dog_id = int(new_dog_id)
+            target_dog = db.get_dog_by_id(new_dog_id)
+            if not target_dog:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Target dog not found"}).encode())
+                return
+
+            success = db.move_dog_reference_image(reference_id, new_dog_id)
+            if success:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"message": "Image moved successfully"}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Reference image not found"}).encode())
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Invalid dog ID"}).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
     def handle_set_primary_reference_image(self, cat_id: int, reference_id: int):
         """Set a reference image as primary for a cat"""
         user = self.get_current_user()
@@ -4392,6 +5380,31 @@ class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         try:
             success = db.set_primary_reference_image(cat_id, reference_id)
+            if success:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"message": "Primary image updated"}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Reference image not found"}).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def handle_set_primary_dog_reference_image(self, dog_id: int, reference_id: int):
+        """Set a reference image as primary for a dog"""
+        user = self.get_current_user()
+        if not user or not user.get('is_admin'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Admin access required"}).encode())
+            return
+
+        try:
+            success = db.set_primary_dog_reference_image(dog_id, reference_id)
             if success:
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')

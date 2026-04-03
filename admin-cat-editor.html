@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>猫咪编辑工具 - 流浪猫公益项目</title>
+    <title>动物编辑工具 - 流浪猫公益项目</title>
     <link rel="stylesheet" href="css/style.css">
     <style>
         body { background-color: #f4f6f8; }
@@ -272,7 +272,7 @@
 <body>
     <header>
         <div class="container">
-            <h1>猫咪编辑工具</h1>
+            <h1>动物编辑工具</h1>
             <div class="auth-buttons">
                 <button onclick="window.location.href='/admin'">返回控制台</button>
             </div>
@@ -282,7 +282,7 @@
     <main>
         <div class="editor-container">
             <div class="panel">
-                <h2>猫咪列表</h2>
+                <h2>动物列表</h2>
                 <input type="text" id="catFilterInput" placeholder="按名称或状态搜索..." style="width:100%; padding:10px; margin-bottom:10px; border:1px solid #ddd; border-radius:4px;">
                 <div style="overflow-y: auto; max-height: 600px;">
                     <table class="cat-list-table" id="editorCatsTable">
@@ -302,9 +302,16 @@
             </div>
 
             <div class="panel">
-                <h2>猫咪详情</h2>
-                <div id="editorEmptyState">请选择左侧猫咪以开始编辑。</div>
+                <h2>动物详情</h2>
+                <div id="editorEmptyState">请选择左侧动物档案以开始编辑。</div>
                 <form id="catEditForm" style="display:none;">
+                    <div class="form-group" style="margin-bottom:15px;">
+                        <label>档案类型</label>
+                        <div style="display:flex; gap:16px; margin-top:8px;">
+                            <label><input type="radio" name="animalType" value="cat" checked> 猫</label>
+                            <label><input type="radio" name="animalType" value="dog"> 狗</label>
+                        </div>
+                    </div>
                     <div class="form-grid">
                         <div>
                             <label>名称</label>
@@ -339,7 +346,7 @@
                         <label>特别说明</label>
                         <textarea id="editSpecialNotes" rows="3"></textarea>
                     </div>
-                    <div style="display:flex; flex-wrap:wrap; gap:20px; margin:15px 0;">
+                    <div id="catOnlyFields" style="display:flex; flex-wrap:wrap; gap:20px; margin:15px 0;">
                         <label><input type="checkbox" id="editSterilized"> 已绝育</label>
                         <label><input type="checkbox" id="editMicrochipped"> 已植入芯片</label>
                         <label><input type="checkbox" id="editApproved"> 已审核通过</label>
@@ -363,8 +370,8 @@
                     </div>
                     <div id="moveImageModal" class="move-image-modal">
                         <div class="move-image-modal-content">
-                            <h3>选择目标猫咪</h3>
-                            <p>将图片移动到哪个猫咪的档案？</p>
+                            <h3>选择目标档案</h3>
+                            <p>将图片移动到哪个动物档案？</p>
                             <div class="cat-select-list" id="catSelectList"></div>
                             <div style="margin-top:15px; display:flex; gap:10px; justify-content:flex-end;">
                                 <button type="button" class="btn-secondary" onclick="closeMoveModal()">取消</button>
@@ -383,6 +390,7 @@
     <script>
         let editorCats = [];
         let selectedCatId = null;
+        let selectedAnimalType = 'cat';
         let currentReferenceImages = [];
         let draggedImageId = null;
         let moveImageTargetId = null;
@@ -393,7 +401,80 @@
                 .catch(() => window.location.href = '/');
 
             document.getElementById('catFilterInput').addEventListener('input', filterCats);
+            document.querySelectorAll('input[name="animalType"]').forEach(input => {
+                input.addEventListener('change', () => {
+                    selectedAnimalType = getSelectedAnimalType();
+                    selectedCatId = null;
+                    currentReferenceImages = [];
+                    document.getElementById('catEditForm').style.display = 'none';
+                    document.getElementById('editorEmptyState').style.display = 'block';
+                    setEditorStatus('');
+                    loadEditorCats();
+                });
+            });
         });
+
+        function getSelectedAnimalType() {
+            return document.querySelector('input[name="animalType"]:checked')?.value || 'cat';
+        }
+
+        function getAnimalLabel() {
+            return getSelectedAnimalType() === 'dog' ? '狗' : '猫咪';
+        }
+
+        function getAnimalListLabel() {
+            return getSelectedAnimalType() === 'dog' ? '狗' : '猫咪';
+        }
+
+        function getListEndpoint() {
+            return getSelectedAnimalType() === 'dog' ? '/api/admin/dogs' : '/api/admin/cats';
+        }
+
+        function getProfileEndpoint(animalId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dog-profiles/${animalId}`
+                : `/api/admin/cat-profiles/${animalId}`;
+        }
+
+        function getUpdateEndpoint(animalId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dogs/${animalId}`
+                : `/api/admin/cats/${animalId}`;
+        }
+
+        function getUploadEndpoint(animalId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dog-profiles/${animalId}/reference-images`
+                : `/api/admin/cat-profiles/${animalId}/reference-images`;
+        }
+
+        function getOrderEndpoint(animalId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dog-reference-images/${animalId}/order`
+                : `/api/admin/reference-images/${animalId}/order`;
+        }
+
+        function getMoveEndpoint(referenceId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dog-reference-images/${referenceId}/move`
+                : `/api/admin/reference-images/${referenceId}/move`;
+        }
+
+        function getSetPrimaryEndpoint(animalId, referenceId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dogs/${animalId}/reference-images/${referenceId}/set-primary`
+                : `/api/admin/cats/${animalId}/reference-images/${referenceId}/set-primary`;
+        }
+
+        function getRegenerateEndpoint(animalId) {
+            return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dogs/${animalId}/regenerate-hash`
+                : `/api/admin/cats/${animalId}/regenerate-hash`;
+        }
+
+        function getAnimalIdFieldName() {
+            return getSelectedAnimalType() === 'dog' ? 'new_dog_id' : 'new_cat_id';
+        }
 
         function checkAdminAccess() {
             return fetch('/api/current_user')
@@ -408,14 +489,14 @@
         }
 
         function loadEditorCats() {
-            fetch('/api/admin/cats')
+            fetch(getListEndpoint())
                 .then(res => res.json())
                 .then(cats => {
                     editorCats = cats || [];
                     renderCatsTable(editorCats);
                 })
                 .catch(err => {
-                    console.error('load cats error', err);
+                    console.error('load animals error', err);
                     const tbody = document.querySelector('#editorCatsTable tbody');
                     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:20px;">加载失败</td></tr>';
                 });
@@ -425,7 +506,7 @@
             const tbody = document.querySelector('#editorCatsTable tbody');
             tbody.innerHTML = '';
             if (!cats.length) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:20px;">暂无猫咪数据</td></tr>';
+                tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:20px;">暂无${getAnimalListLabel()}数据</td></tr>`;
                 return;
             }
             cats.forEach(cat => {
@@ -461,12 +542,12 @@
         }
 
         function loadCatDetail(catId) {
-            fetch(`/api/admin/cat-profiles/${catId}`)
+            fetch(getProfileEndpoint(catId))
                 .then(res => res.json())
                 .then(cat => populateCatForm(cat))
                 .catch(err => {
-                    console.error('load cat profile error', err);
-                    setEditorStatus('加载猫咪详情失败', 'error');
+                    console.error('load animal profile error', err);
+                    setEditorStatus('加载动物详情失败', 'error');
                 });
         }
 
@@ -474,6 +555,7 @@
             document.getElementById('editorEmptyState').style.display = 'none';
             const form = document.getElementById('catEditForm');
             form.style.display = 'block';
+            document.getElementById('catOnlyFields').style.display = getSelectedAnimalType() === 'dog' ? 'none' : 'flex';
             document.getElementById('editName').value = cat.name || '';
             document.getElementById('editAge').value = cat.age || '';
             document.getElementById('editGender').value = cat.gender || '';
@@ -522,7 +604,7 @@
                     <div class="image-item-overlay">
                         <div class="image-item-actions">
                             ${!ref.is_primary ? `<button class="image-item-btn primary" onclick="setPrimaryImage(${ref.id})" title="设为主图">设为主图</button>` : ''}
-                            <button class="image-item-btn move" onclick="openMoveModal(${ref.id})" title="移动到其他猫咪">移动</button>
+                            <button class="image-item-btn move" onclick="openMoveModal(${ref.id})" title="移动到其他档案">移动</button>
                             <button class="image-item-btn delete" onclick="deleteImage(${ref.id})" title="删除">删除</button>
                         </div>
                     </div>
@@ -600,7 +682,7 @@
                 order_index: ref.order_index !== undefined ? ref.order_index : index
             }));
             
-            fetch(`/api/admin/reference-images/${selectedCatId}/order`, {
+            fetch(getOrderEndpoint(selectedCatId), {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ orders })
@@ -643,7 +725,7 @@
         function setPrimaryImage(referenceId) {
             if (!selectedCatId) return;
             
-            fetch(`/api/admin/cats/${selectedCatId}/reference-images/${referenceId}/set-primary`, {
+            fetch(getSetPrimaryEndpoint(selectedCatId, referenceId), {
                 method: 'POST'
             })
             .then(res => res.json().then(data => ({ ok: res.ok, data })))
@@ -680,7 +762,7 @@
             });
             
             if (list.children.length === 0) {
-                list.innerHTML = '<div style="text-align:center; color:#666; padding:20px;">没有其他猫咪档案</div>';
+                list.innerHTML = '<div style="text-align:center; color:#666; padding:20px;">没有其他档案</div>';
             }
             
             modal.classList.add('active');
@@ -699,15 +781,15 @@
         }
         
         function moveImageToCat(referenceId, newCatId) {
-            fetch(`/api/admin/reference-images/${referenceId}/move`, {
+            fetch(getMoveEndpoint(referenceId), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_cat_id: newCatId })
+                body: JSON.stringify({ [getAnimalIdFieldName()]: newCatId })
             })
             .then(res => res.json().then(data => ({ ok: res.ok, data })))
             .then(({ ok, data }) => {
                 if (ok) {
-                    setEditorStatus('图片已移动到其他猫咪档案', 'success');
+                    setEditorStatus('图片已移动到其他档案', 'success');
                     closeMoveModal();
                     loadCatDetail(selectedCatId);
                 } else {
@@ -752,7 +834,7 @@
         
         async function uploadImages(files) {
             if (!selectedCatId) {
-                setEditorStatus('请先选择一只猫咪', 'error');
+                setEditorStatus('请先选择一个档案', 'error');
                 return;
             }
             
@@ -788,7 +870,7 @@
                 compressedFiles.forEach(file => formData.append('images', file));
                 formData.append('primary_index', '-1'); // Don't auto-set primary
                 
-                const res = await fetch(`/api/admin/cat-profiles/${selectedCatId}/reference-images`, {
+                const res = await fetch(getUploadEndpoint(selectedCatId), {
                     method: 'POST',
                     body: formData
                 });
@@ -807,7 +889,7 @@
         }
 
         function collectCatPayload() {
-            return {
+            const payload = {
                 name: document.getElementById('editName').value.trim(),
                 age: document.getElementById('editAge').value.trim(),
                 gender: document.getElementById('editGender').value,
@@ -818,14 +900,17 @@
                 sterilized: document.getElementById('editSterilized').checked,
                 microchipped: document.getElementById('editMicrochipped').checked,
                 is_approved: document.getElementById('editApproved').checked,
-                is_adopted: document.getElementById('editAdopted').checked
             };
+            if (getSelectedAnimalType() === 'cat') {
+                payload.is_adopted = document.getElementById('editAdopted').checked;
+            }
+            return payload;
         }
 
         function saveCatChanges() {
             if (!selectedCatId) return;
             const payload = collectCatPayload();
-            fetch(`/api/admin/cats/${selectedCatId}`, {
+            fetch(getUpdateEndpoint(selectedCatId), {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -833,7 +918,7 @@
             .then(res => res.json().then(data => ({ ok: res.ok, data })))
             .then(({ ok, data }) => {
                 if (ok) {
-                    setEditorStatus('猫咪信息已保存', 'success');
+                    setEditorStatus('动物信息已保存', 'success');
                     loadEditorCats();
                 } else {
                     throw new Error(data.error || '保存失败');
@@ -853,7 +938,7 @@
             }
             // Regenerate hash for all images
             const allRefIds = currentReferenceImages.map(ref => ref.id);
-            fetch(`/api/admin/cats/${selectedCatId}/regenerate-hash`, {
+            fetch(getRegenerateEndpoint(selectedCatId), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ reference_ids: allRefIds })
