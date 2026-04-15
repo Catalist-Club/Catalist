@@ -2,7 +2,8 @@ import io
 import os
 import threading
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from enum import Enum
+from typing import Dict, Iterable, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -20,6 +21,12 @@ try:
     from ultralytics import YOLO
 except ImportError:  # pragma: no cover - optional dependency
     YOLO = None
+
+
+class AnimalType(str, Enum):
+    """Enumeration for animal types."""
+    CAT = "cat"
+    DOG = "dog"
 
 
 def _default_device() -> str:
@@ -71,24 +78,76 @@ def cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
 
 @dataclass
 class RecognitionResult:
-    cat_id: Optional[int]
-    cat_name: str
+    """Generic recognition result that works for both cats and dogs."""
+    entity_id: Optional[int]
+    entity_name: str
     similarity: float
     hamming_distance: int
     reference_image_id: Optional[int]
     reference_hash_length: int
     matched: bool
     metadata: Dict[str, float]
+    animal_type: AnimalType = AnimalType.CAT
+
+    # Backward compatibility properties
+    @property
+    def cat_id(self) -> Optional[int]:
+        """Alias for entity_id (for backward compatibility)."""
+        return self.entity_id
+
+    @property
+    def cat_name(self) -> str:
+        """Alias for entity_name (for backward compatibility)."""
+        return self.entity_name
+
+    @property
+    def dog_id(self) -> Optional[int]:
+        """Alias for entity_id."""
+        return self.entity_id
+
+    @property
+    def dog_name(self) -> str:
+        """Alias for entity_name."""
+        return self.entity_name
+
+    def to_dict(self) -> Dict:
+        """Convert result to dictionary."""
+        return {
+            "entity_id": self.entity_id,
+            "entity_name": self.entity_name,
+            "similarity": self.similarity,
+            "hamming_distance": self.hamming_distance,
+            "reference_image_id": self.reference_image_id,
+            "reference_hash_length": self.reference_hash_length,
+            "matched": self.matched,
+            "animal_type": self.animal_type.value,
+            "metadata": self.metadata,
+        }
+
+    def convert_to_animal(self, target_type: AnimalType) -> "RecognitionResult":
+        """Convert result to a different animal type."""
+        return RecognitionResult(
+            entity_id=self.entity_id,
+            entity_name=self.entity_name,
+            similarity=self.similarity,
+            hamming_distance=self.hamming_distance,
+            reference_image_id=self.reference_image_id,
+            reference_hash_length=self.reference_hash_length,
+            matched=self.matched,
+            metadata=self.metadata,
+            animal_type=target_type,
+        )
 
 
-class CatFaceRecognizer:
+class AnimalFaceRecognizer:
     """
-    Cat face recognition service that loads a CNN backbone (ResNet18 by default)
-    to compute embeddings and locality-sensitive hashes for cat images.
+    Generic face recognition service for cats and dogs that loads a CNN backbone 
+    (ResNet18 by default) to compute embeddings and locality-sensitive hashes.
     """
 
     def __init__(
         self,
+        animal_type: AnimalType = AnimalType.CAT,
         model_dir: str = "models/cat_face",
         model_filename: str = "cat_resnet101_gpu_amp_final.pth",
         backbone_name: str = "resnet101",
@@ -97,6 +156,7 @@ class CatFaceRecognizer:
         yolo_model_path: Optional[str] = None,
         yolo_class_names: Optional[List[str]] = None,
     ):
+        self.animal_type = animal_type
         self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
 
@@ -106,7 +166,7 @@ class CatFaceRecognizer:
         self.device = torch.device(device or _default_device())
         self.hash_length_override = hash_length
         self.yolo_model_path = yolo_model_path
-        self.yolo_class_names = [name.lower() for name in (yolo_class_names or ["cat"])]
+        self.yolo_class_names = [name.lower() for name in (yolo_class_names or [animal_type.value])]
 
         self._model = None
         self._model_lock = threading.Lock()
@@ -144,9 +204,9 @@ class CatFaceRecognizer:
                 try:
                     state_dict = torch.load(self.model_path, map_location="cpu")
                     backbone.load_state_dict(state_dict, strict=False)
-                    print(f"Loaded cat face weights from {self.model_path}")
+                    print(f"Loaded {self.animal_type.value} face weights from {self.model_path}")
                 except Exception as exc:  # pragma: no cover
-                    print(f"Failed to load custom cat face weights: {exc}. Falling back to ImageNet weights.")
+                    print(f"Failed to load custom {self.animal_type.value} face weights: {exc}. Falling back to ImageNet weights.")
 
             backbone.eval()
             backbone.to(self.device)
@@ -283,7 +343,7 @@ class CatFaceRecognizer:
         results: List[RecognitionResult] = []
         hash_length = query_bits.size
 
-        for cat_id, ref_image_id, ref_hash_bits, ref_embedding in references:
+        for entity_id, ref_image_id, ref_hash_bits, ref_embedding in references:
             ref_bits = ensure_numpy_array(ref_hash_bits).astype(bool)
             ref_vec = ensure_numpy_array(ref_embedding).astype(np.float32)
 
@@ -294,8 +354,8 @@ class CatFaceRecognizer:
             matched = similarity >= similarity_threshold
             results.append(
                 RecognitionResult(
-                    cat_id=cat_id,
-                    cat_name="",
+                    entity_id=entity_id,
+                    entity_name="",
                     similarity=similarity,
                     hamming_distance=distance,
                     reference_image_id=ref_image_id,
@@ -305,6 +365,7 @@ class CatFaceRecognizer:
                         "hash_distance": float(distance),
                         "similarity": similarity,
                     },
+                    animal_type=self.animal_type,
                 )
             )
 
@@ -358,5 +419,130 @@ def ensure_numpy_array(value) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value
     return np.asarray(value)
+
+
+# ============================================================================
+# BACKWARD COMPATIBILITY WRAPPER CLASSES
+# ============================================================================
+
+class CatFaceRecognizer(AnimalFaceRecognizer):
+    """Backward compatibility wrapper for CatFaceRecognizer (uses AnimalFaceRecognizer internally)."""
+
+    def __init__(
+        self,
+        model_dir: str = "models/cat_face",
+        model_filename: str = "cat_resnet101_gpu_amp_final.pth",
+        backbone_name: str = "resnet101",
+        device: Optional[str] = None,
+        hash_length: Optional[int] = None,
+        yolo_model_path: Optional[str] = None,
+        yolo_class_names: Optional[List[str]] = None,
+    ):
+        super().__init__(
+            animal_type=AnimalType.CAT,
+            model_dir=model_dir,
+            model_filename=model_filename,
+            backbone_name=backbone_name,
+            device=device,
+            hash_length=hash_length,
+            yolo_model_path=yolo_model_path,
+            yolo_class_names=yolo_class_names or ["cat"],
+        )
+
+
+# ============================================================================
+# UTILITY FUNCTIONS FOR CROSS-ANIMAL CONVERSION
+# ============================================================================
+
+def convert_results(
+    results: List[RecognitionResult],
+    target_type: AnimalType,
+) -> List[RecognitionResult]:
+    """Convert a list of recognition results to a different animal type."""
+    return [result.convert_to_animal(target_type) for result in results]
+
+
+def create_hybrid_recognizer(cat_recognizer: AnimalFaceRecognizer, dog_recognizer: AnimalFaceRecognizer) -> "HybridAnimalRecognizer":
+    """Create a hybrid recognizer that handles both cats and dogs."""
+    return HybridAnimalRecognizer(cat_recognizer, dog_recognizer)
+
+
+class HybridAnimalRecognizer:
+    """Hybrid recognizer that can process both cats and dogs with seamless switching."""
+
+    def __init__(
+        self,
+        cat_recognizer: Optional[AnimalFaceRecognizer] = None,
+        dog_recognizer: Optional[AnimalFaceRecognizer] = None,
+    ):
+        self.recognizers = {}
+        if cat_recognizer:
+            self.recognizers[AnimalType.CAT] = cat_recognizer
+        if dog_recognizer:
+            self.recognizers[AnimalType.DOG] = dog_recognizer
+
+    def add_recognizer(self, animal_type: AnimalType, recognizer: AnimalFaceRecognizer) -> None:
+        """Add a recognizer for a specific animal type."""
+        self.recognizers[animal_type] = recognizer
+
+    def get_recognizer(self, animal_type: AnimalType) -> AnimalFaceRecognizer:
+        """Get recognizer for a specific animal type."""
+        if animal_type not in self.recognizers:
+            raise ValueError(f"No recognizer available for {animal_type.value}")
+        return self.recognizers[animal_type]
+
+    def compute_signature(self, image_bytes: bytes, animal_type: AnimalType) -> Tuple[np.ndarray, str, np.ndarray]:
+        """Compute signature for a specific animal type."""
+        recognizer = self.get_recognizer(animal_type)
+        return recognizer.compute_signature(image_bytes)
+
+    def match_against(
+        self,
+        query_hash: np.ndarray,
+        query_embedding: np.ndarray,
+        references: Iterable[Tuple[int, Optional[int], np.ndarray, np.ndarray]],
+        animal_type: AnimalType,
+        *,
+        max_results: int = 5,
+        similarity_threshold: float = 0.75,
+        max_hamming: Optional[int] = None,
+    ) -> List[RecognitionResult]:
+        """Match query against references for a specific animal type."""
+        recognizer = self.get_recognizer(animal_type)
+        return recognizer.match_against(
+            query_hash,
+            query_embedding,
+            references,
+            max_results=max_results,
+            similarity_threshold=similarity_threshold,
+            max_hamming=max_hamming,
+        )
+
+    def cross_animal_match(
+        self,
+        query_hash: np.ndarray,
+        query_embedding: np.ndarray,
+        references_by_type: Dict[AnimalType, Iterable[Tuple[int, Optional[int], np.ndarray, np.ndarray]]],
+        *,
+        max_results: int = 5,
+        similarity_threshold: float = 0.75,
+        max_hamming: Optional[int] = None,
+    ) -> List[RecognitionResult]:
+        """Match query against multiple animal types and return combined results."""
+        all_results = []
+        for animal_type, references in references_by_type.items():
+            results = self.match_against(
+                query_hash,
+                query_embedding,
+                references,
+                animal_type,
+                max_results=max_results,
+                similarity_threshold=similarity_threshold,
+                max_hamming=max_hamming,
+            )
+            all_results.extend(results)
+        # Sort by similarity across all animal types
+        all_results.sort(key=lambda item: (-(item.similarity), item.hamming_distance))
+        return all_results[:max_results]
 
 
