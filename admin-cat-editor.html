@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>动物编辑工具 - 流浪猫公益项目</title>
+    <title>猫狗统一编辑工具 - 流浪猫公益项目</title>
     <link rel="stylesheet" href="css/style.css">
     <style>
         body { background-color: #f4f6f8; }
@@ -272,7 +272,7 @@
 <body>
     <header>
         <div class="container">
-            <h1>动物编辑工具</h1>
+            <h1>猫狗统一编辑工具</h1>
             <div class="auth-buttons">
                 <button onclick="window.location.href='/admin'">返回控制台</button>
             </div>
@@ -282,8 +282,8 @@
     <main>
         <div class="editor-container">
             <div class="panel">
-                <h2>动物列表</h2>
-                <input type="text" id="catFilterInput" placeholder="按名称或状态搜索..." style="width:100%; padding:10px; margin-bottom:10px; border:1px solid #ddd; border-radius:4px;">
+                <h2>档案列表</h2>
+                <input type="text" id="catFilterInput" placeholder="按名称、ID 或状态搜索..." style="width:100%; padding:10px; margin-bottom:10px; border:1px solid #ddd; border-radius:4px;">
                 <div style="overflow-y: auto; max-height: 600px;">
                     <table class="cat-list-table" id="editorCatsTable">
                         <thead>
@@ -302,11 +302,11 @@
             </div>
 
             <div class="panel">
-                <h2>动物详情</h2>
+                <h2>档案详情</h2>
                 <div id="editorEmptyState">请选择左侧动物档案以开始编辑。</div>
                 <form id="catEditForm" style="display:none;">
                     <div class="form-group" style="margin-bottom:15px;">
-                        <label>档案类型</label>
+                        <label>档案类型（同页切换）</label>
                         <div style="display:flex; gap:16px; margin-top:8px;">
                             <label><input type="radio" name="animalType" value="cat" checked> 猫</label>
                             <label><input type="radio" name="animalType" value="dog"> 狗</label>
@@ -451,6 +451,12 @@
 
         function getProfileEndpoint(animalId) {
             return getSelectedAnimalType() === 'dog'
+                ? `/api/admin/dog-profiles/${animalId}`
+                : `/api/admin/cat-profiles/${animalId}`;
+        }
+
+        function getProfileEndpointForType(animalType, animalId) {
+            return animalType === 'dog'
                 ? `/api/admin/dog-profiles/${animalId}`
                 : `/api/admin/cat-profiles/${animalId}`;
         }
@@ -635,13 +641,13 @@
 
             await copyReferenceImagesToAnimal(targetType, newAnimalId, currentReferenceImages || []);
 
+            await loadAnimalDetail(targetType, newAnimalId);
+
             selectedAnimalType = targetType;
             setSelectedAnimalTypeRadio(targetType);
             selectedCatId = newAnimalId;
-            currentReferenceImages = [];
 
             await loadEditorCats();
-            await loadCatDetail(newAnimalId);
             setEditorStatus(`已转换为${targetLabel}档案`, 'success');
         }
 
@@ -685,20 +691,24 @@
         }
 
         function loadCatDetail(catId) {
-            fetch(getProfileEndpoint(catId))
+            return loadAnimalDetail(getSelectedAnimalType(), catId);
+        }
+
+        function loadAnimalDetail(animalType, animalId) {
+            return fetch(getProfileEndpointForType(animalType, animalId))
                 .then(res => res.json())
-                .then(cat => populateCatForm(cat))
+                .then(cat => populateCatForm(cat, animalType))
                 .catch(err => {
                     console.error('load animal profile error', err);
                     setEditorStatus('加载动物详情失败', 'error');
                 });
         }
 
-        function populateCatForm(cat) {
+        function populateCatForm(cat, animalType = getSelectedAnimalType()) {
             document.getElementById('editorEmptyState').style.display = 'none';
             const form = document.getElementById('catEditForm');
             form.style.display = 'block';
-            document.getElementById('catOnlyFields').style.display = getSelectedAnimalType() === 'dog' ? 'none' : 'flex';
+            document.getElementById('catOnlyFields').style.display = animalType === 'dog' ? 'none' : 'flex';
             document.getElementById('editName').value = cat.name || '';
             document.getElementById('editAge').value = cat.age || '';
             document.getElementById('editGender').value = cat.gender || '';
