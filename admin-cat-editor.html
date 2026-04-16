@@ -402,20 +402,39 @@
 
             document.getElementById('catFilterInput').addEventListener('input', filterCats);
             document.querySelectorAll('input[name="animalType"]').forEach(input => {
-                input.addEventListener('change', () => {
-                    selectedAnimalType = getSelectedAnimalType();
-                    selectedCatId = null;
-                    currentReferenceImages = [];
-                    document.getElementById('catEditForm').style.display = 'none';
-                    document.getElementById('editorEmptyState').style.display = 'block';
-                    setEditorStatus('');
-                    loadEditorCats();
+                input.addEventListener('change', async () => {
+                    await handleAnimalTypeChange();
                 });
             });
+
+            updateEmptyStateText();
         });
 
         function getSelectedAnimalType() {
             return document.querySelector('input[name="animalType"]:checked')?.value || 'cat';
+        }
+
+        function setSelectedAnimalTypeRadio(animalType) {
+            const radio = document.querySelector(`input[name="animalType"][value="${animalType}"]`);
+            if (radio) {
+                radio.checked = true;
+            }
+        }
+
+        function updateEmptyStateText() {
+            const emptyState = document.getElementById('editorEmptyState');
+            if (emptyState) {
+                emptyState.textContent = `请选择左侧${getAnimalLabel()}档案以开始编辑。`;
+            }
+        }
+
+        function resetEditorSelection() {
+            selectedCatId = null;
+            currentReferenceImages = [];
+            document.getElementById('catEditForm').style.display = 'none';
+            document.getElementById('editorEmptyState').style.display = 'block';
+            updateEmptyStateText();
+            setEditorStatus('');
         }
 
         function getAnimalLabel() {
@@ -489,7 +508,7 @@
         }
 
         function loadEditorCats() {
-            fetch(getListEndpoint())
+            return fetch(getListEndpoint())
                 .then(res => res.json())
                 .then(cats => {
                     editorCats = cats || [];
@@ -500,6 +519,130 @@
                     const tbody = document.querySelector('#editorCatsTable tbody');
                     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:20px;">加载失败</td></tr>';
                 });
+        }
+
+        async function handleAnimalTypeChange() {
+            const nextType = getSelectedAnimalType();
+            if (nextType === selectedAnimalType) {
+                return;
+            }
+
+            const previousType = selectedAnimalType;
+            const hasLoadedAnimal = !!selectedCatId && document.getElementById('catEditForm').style.display !== 'none';
+
+            if (!hasLoadedAnimal) {
+                selectedAnimalType = nextType;
+                resetEditorSelection();
+                loadEditorCats();
+                return;
+            }
+
+            const sourceLabel = previousType === 'dog' ? '狗' : '猫';
+            const targetLabel = nextType === 'dog' ? '狗' : '猫';
+            const confirmed = confirm(`是否将当前${sourceLabel}档案转换为${targetLabel}档案？系统会复制当前信息和参考图片，并生成一个新的${targetLabel}档案。`);
+
+            if (!confirmed) {
+                setSelectedAnimalTypeRadio(previousType);
+                return;
+            }
+
+            try {
+                await convertCurrentAnimal(nextType);
+            } catch (error) {
+                console.error('convert animal error', error);
+                setSelectedAnimalTypeRadio(previousType);
+                setEditorStatus(error.message || '转换失败', 'error');
+            }
+        }
+
+        async function copyReferenceImagesToAnimal(targetType, animalId, references) {
+            if (!references || references.length === 0) {
+                return;
+            }
+
+            const orderedReferences = [...references].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+            const files = [];
+
+            for (const reference of orderedReferences) {
+                const imagePath = reference.image_path || '';
+                if (!imagePath) {
+                    continue;
+                }
+
+                const imageUrl = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+                const response = await fetch(imageUrl);
+                if (!response.ok) {
+                    throw new Error(`读取参考图片 #${reference.id} 失败`);
+                }
+
+                const blob = await response.blob();
+                const fileName = imagePath.split('/').pop() || `reference-${reference.id}.jpg`;
+                files.push(new File([blob], fileName, {
+                    type: blob.type || 'image/jpeg',
+                    lastModified: Date.now()
+                }));
+            }
+
+            if (files.length === 0) {
+                return;
+            }
+
+            const formData = new FormData();
+            files.forEach(file => formData.append('images', file));
+            const primaryIndex = orderedReferences.findIndex(reference => reference.is_primary);
+            formData.append('primary_index', String(primaryIndex >= 0 ? primaryIndex : -1));
+
+            const uploadEndpoint = targetType === 'dog'
+                ? `/api/admin/dog-profiles/${animalId}/reference-images`
+                : `/api/admin/cat-profiles/${animalId}/reference-images`;
+
+            const response = await fetch(uploadEndpoint, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || '复制参考图片失败');
+            }
+        }
+
+        async function convertCurrentAnimal(targetType) {
+            if (!selectedCatId) {
+                throw new Error('请先选择一个档案');
+            }
+
+            const payload = collectCatPayload();
+            const createEndpoint = targetType === 'dog' ? '/api/admin/dog-profiles' : '/api/admin/cat-profiles';
+            const targetLabel = targetType === 'dog' ? '狗' : '猫';
+
+            setEditorStatus(`正在转换为${targetLabel}档案...`, 'info');
+
+            const createResponse = await fetch(createEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const createData = await createResponse.json().catch(() => ({}));
+            if (!createResponse.ok) {
+                throw new Error(createData.error || '创建档案失败');
+            }
+
+            const createdAnimal = createData[targetType] || {};
+            const newAnimalId = createdAnimal.id;
+            if (!newAnimalId) {
+                throw new Error('转换成功，但未返回新档案 ID');
+            }
+
+            await copyReferenceImagesToAnimal(targetType, newAnimalId, currentReferenceImages || []);
+
+            selectedAnimalType = targetType;
+            setSelectedAnimalTypeRadio(targetType);
+            selectedCatId = newAnimalId;
+            currentReferenceImages = [];
+
+            await loadEditorCats();
+            await loadCatDetail(newAnimalId);
+            setEditorStatus(`已转换为${targetLabel}档案`, 'success');
         }
 
         function renderCatsTable(cats) {
